@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package consensus;
+
+// Define CommandType enum
+enum CommandType {
+    COMMAND_TYPE_UNSPECIFIED = 0; // Default value, indicates unspecified command type
+    ADD = 1;
+    DELETE = 2;
+    UPDATE = 3;
+    READ = 4;
+}
+
+message ReplicaID {
+    uint64 value = 1;
+}
+
+message LocalInstanceID {
+    uint64 value = 1;
+}
+
+message Seq {
+    uint64 value = 1;
+}
+
+message CommandLeaderID {
+    uint64 value = 1;
+}
+
+message AcceptorID {
+    uint64 value = 1;
+}
+
+message Ballot {
+    uint64 epoch = 1;
+    uint64 base = 2;
+    ReplicaID replica_id = 3;
+}
+
+message InstanceID {
+    ReplicaID replica_id = 1;
+    LocalInstanceID local_instance_id = 2;
+}
+
+// Define Command message
+message Command {
+    CommandType command_type = 1; // Type of the command
+    bytes key = 2;                // Key associated with the command
+    optional bytes value = 3;     // Optional value; use the 'optional' keyword to indicate an optional field
+}
+
+// Define other message types
+
+message PreAccept {
+    CommandLeaderID command_leader_id = 1; // Identifier of the command leader initiating the request
+    InstanceID instance_id = 2;       // Identifier of the instance
+    Seq seq = 3;               // Sequence number
+    Ballot ballot = 4;            // Ballot number
+    repeated Command cmds = 5;    // List of commands
+    repeated LocalInstanceID deps = 6;     // List of dependent instances; missing dependencies are represented by 0
+}
+
+message PreAcceptReply {
+    InstanceID instance_id = 1;
+    Seq seq = 2;
+    Ballot ballot = 3;
+    bool ok = 4;
+    repeated LocalInstanceID deps = 5;             // List of dependent instances; missing dependencies are represented by 0
+    repeated LocalInstanceID committed_deps = 6;   // List of committed dependencies; missing dependencies are represented by 0
+}
+
+message PreAcceptOk {
+    InstanceID instance_id = 1;
+}
+
+message Accept {
+    CommandLeaderID command_leader_id = 1;         // Uniformly use 'command_leader_id'
+    InstanceID instance_id = 2;
+    Ballot ballot = 3;
+    Seq seq = 4;
+    uint64 cmd_cnt = 5;                   // Number of commands
+    repeated LocalInstanceID deps = 6;             // List of dependent instances; missing dependencies are represented by 0
+}
+
+message AcceptReply {
+    InstanceID instance_id = 1;
+    bool ok = 2;
+    Ballot ballot = 3;
+}
+
+message Commit {
+    CommandLeaderID command_leader_id = 1;
+    InstanceID instance_id = 2;
+    Seq seq = 3;
+    repeated Command cmds = 4;
+    repeated LocalInstanceID deps = 5;             // List of dependent instances; missing dependencies are represented by 0
+}
+
+message CommitShort {
+    CommandLeaderID command_leader_id = 1;         // Changed from 'leader_id' to 'command_leader_id' for consistency
+    InstanceID instance_id = 2;
+    Seq seq = 3;
+    uint64 cmd_cnt = 4;                   // Number of commands
+    repeated uint64 deps = 5;             // List of dependent instances; missing dependencies are represented by 0
+}
+
+message Propose {
+    repeated Command cmds = 1;
+}
+
+message Empty {}
+
+message ConsensusMessage {
+    oneof message {
+        PreAccept pre_accept = 1;
+        PreAcceptReply pre_accept_reply = 2;
+        PreAcceptOk pre_accept_ok = 3;
+        Accept accept = 4;
+        AcceptReply accept_reply = 5;
+        Commit commit = 6;
+        CommitShort commit_short = 7;
+        Propose propose = 8;
+        Empty empty = 9;
+    }
+}
+
+service ConsensusService {
+    rpc StreamMessages(stream ConsensusMessage) returns (stream ConsensusMessage);
+}

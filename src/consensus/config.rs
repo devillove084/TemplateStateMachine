@@ -2,6 +2,7 @@ use std::ops::Index;
 
 use yaml_rust::YamlLoader;
 
+#[derive(Clone)]
 pub struct Configure {
     pub peer_cnt: usize,
     pub peer: Vec<String>,

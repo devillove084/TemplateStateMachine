@@ -4,38 +4,34 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::{Notify, RwLock, RwLockMappedWriteGuard, RwLockReadGuard, RwLockWriteGuard};
 
-use super::types::{
-    Ballot, InstanceID, InstanceStatus, LeaderBook, LocalInstanceID, ReplicaID, Seq,
-};
-use super::util::instance_exist;
-use super::Command;
+use crate::{Ballot, Command, InstanceId, LocalInstanceId, ReplicaId, Seq};
 
 #[derive(Debug, Clone)]
 pub struct Instance {
-    pub id: InstanceID,
+    pub id: InstanceId,
     pub seq: Seq,
     pub ballot: Ballot,
     pub cmds: Vec<Command>,
-    pub deps: Vec<Option<LocalInstanceID>>,
+    pub deps: Vec<LocalInstanceId>,
     pub status: InstanceStatus,
     pub leaderbook: LeaderBook,
 }
 
 impl Instance {
-    pub fn local_id(&self) -> LocalInstanceID {
-        self.id.local
+    pub fn local_id(&self) -> LocalInstanceId {
+        self.id.local_instance_id.unwrap()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct SharedInstancespace {
+pub struct SharedInstanceSpace {
     instance: Option<Instance>,
     notify: Option<Vec<Arc<Notify>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SharedInstance {
-    space: Arc<RwLock<SharedInstancespace>>,
+    space: Arc<RwLock<SharedInstanceSpace>>,
 }
 
 impl PartialEq for SharedInstance {
@@ -59,7 +55,7 @@ impl SharedInstance {
 
     pub fn new(instance: Option<Instance>, notify: Option<Vec<Arc<Notify>>>) -> Self {
         Self {
-            space: Arc::new(RwLock::new(SharedInstancespace { instance, notify })),
+            space: Arc::new(RwLock::new(SharedInstanceSpace { instance, notify })),
         }
     }
 
@@ -116,7 +112,7 @@ impl SharedInstance {
 }
 
 pub struct InstanceSpace {
-    space: DashMap<(ReplicaID, LocalInstanceID), SharedInstance>,
+    space: DashMap<(ReplicaId, LocalInstanceId), SharedInstance>,
 }
 
 impl InstanceSpace {
@@ -128,10 +124,10 @@ impl InstanceSpace {
 
     pub async fn get_instance_or_notify(
         &self,
-        replica: &ReplicaID,
-        instance_id: &LocalInstanceID,
+        replica: &ReplicaId,
+        instance_id: &LocalInstanceId,
     ) -> (Option<SharedInstance>, Option<Arc<Notify>>) {
-        let key = (replica.clone(), instance_id.clone());
+        let key = (*replica, *instance_id);
         if let Some(instance) = self.space.get(&key) {
             let instance = instance.clone();
             if Self::need_notify(&Some(instance.clone())).await {
@@ -152,20 +148,34 @@ impl InstanceSpace {
 
     pub async fn get_instance(
         &self,
-        replica: &ReplicaID,
-        instance_id: &LocalInstanceID,
+        replica: &ReplicaId,
+        instance_id: &LocalInstanceId,
     ) -> Option<SharedInstance> {
-        let key = (replica.clone(), instance_id.clone());
+        let key = (*replica, *instance_id);
         self.space.get(&key).map(|instance| instance.clone())
+    }
+
+    pub async fn get_all_instance(&self) -> Option<Vec<SharedInstance>> {
+        if self.space.is_empty() {
+            return None;
+        }
+
+        let instances: Vec<SharedInstance> = self
+            .space
+            .iter()
+            .map(|entry| entry.value().clone()) // 获取每个实例的副本
+            .collect();
+
+        Some(instances)
     }
 
     pub async fn insert_instance(
         &self,
-        replica: &ReplicaID,
-        instance_id: &LocalInstanceID,
+        replica: &ReplicaId,
+        instance_id: &LocalInstanceId,
         instance: SharedInstance,
     ) {
-        let key = (replica.clone(), instance_id.clone());
+        let key = (*replica, *instance_id);
         self.space.insert(key, instance);
     }
 
@@ -181,6 +191,51 @@ impl InstanceSpace {
                 d_ins_read_space.status,
                 InstanceStatus::Committed | InstanceStatus::Executed
             }
+        }
+    }
+}
+
+pub async fn instance_exist(instance: &Option<SharedInstance>) -> bool {
+    if instance.is_some() {
+        let ins = instance.as_ref().unwrap();
+        let ins_read = ins.get_instance_read().await;
+        ins_read.is_some()
+    } else {
+        false
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+pub enum InstanceStatus {
+    PreAccepted,
+    PreAcceptedEq,
+    Accepted,
+    Committed,
+    Executed,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LeaderBook {
+    pub accept_ok: usize,
+    pub preaccept_ok: usize,
+    pub nack: usize,
+    pub max_ballot: Ballot,
+    pub all_equal: bool,
+}
+
+impl LeaderBook {
+    pub fn new(replica_id: ReplicaId) -> Self {
+        // let mut ballot = Ballot::default();
+        // ballot.replica_id = Some(replica_id);
+        LeaderBook {
+            accept_ok: 0,
+            preaccept_ok: 0,
+            nack: 0,
+            max_ballot: Ballot {
+                replica_id: Some(replica_id),
+                ..Default::default()
+            },
+            all_equal: true,
         }
     }
 }

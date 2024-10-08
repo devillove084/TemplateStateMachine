@@ -1,5 +1,2 @@
-mod rpc_server;
-pub use rpc_server::*;
-
-mod serve;
-pub use serve::*;
+mod consensus_server;
+pub use consensus_server::*;
