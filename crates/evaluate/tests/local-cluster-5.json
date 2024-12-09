@@ -1,0 +1,96 @@
+{
+    "monitor": {
+        "base": "../../monitor/tests/local-monitor.toml",
+        "overwrite": {
+            "state_path": "/tmp/cluster/monitor/state",
+            "listen_rpc_addr": "127.0.0.1:9000"
+        }
+    },
+    "servers": {
+        "alpha": {
+            "base": "../../server/tests/local-server.toml",
+            "overwrite": {
+                "server": {
+                    "listen_peer_addr": "127.0.0.1:8010",
+                    "listen_client_addr": "127.0.0.1:8011",
+                    "monitor_addr": "127.0.0.1:9000",
+                    "public_peer_addr": "127.0.0.1:8010"
+                },
+                "log_db": {
+                    "path": "/tmp/cluster/servers/alpha/log_db"
+                },
+                "data_db": {
+                    "path": "/tmp/cluster/servers/alpha/data_db"
+                }
+            }
+        },
+        "beta": {
+            "base": "../../server/tests/local-server.toml",
+            "overwrite": {
+                "server": {
+                    "listen_peer_addr": "127.0.0.1:8020",
+                    "listen_client_addr": "127.0.0.1:8021",
+                    "monitor_addr": "127.0.0.1:9000",
+                    "public_peer_addr": "127.0.0.1:8020"
+                },
+                "log_db": {
+                    "path": "/tmp/cluster/servers/beta/log_db"
+                },
+                "data_db": {
+                    "path": "/tmp/cluster/servers/beta/data_db"
+                }
+            }
+        },
+        "gamma": {
+            "base": "../../server/tests/local-server.toml",
+            "overwrite": {
+                "server": {
+                    "listen_peer_addr": "127.0.0.1:8030",
+                    "listen_client_addr": "127.0.0.1:8031",
+                    "monitor_addr": "127.0.0.1:9000",
+                    "public_peer_addr": "127.0.0.1:8030"
+                },
+                "log_db": {
+                    "path": "/tmp/cluster/servers/gamma/log_db"
+                },
+                "data_db": {
+                    "path": "/tmp/cluster/servers/gamma/data_db"
+                }
+            }
+        },
+        "delta": {
+            "base": "../../server/tests/local-server.toml",
+            "overwrite": {
+                "server": {
+                    "listen_peer_addr": "127.0.0.1:8040",
+                    "listen_client_addr": "127.0.0.1:8041",
+                    "monitor_addr": "127.0.0.1:9000",
+                    "public_peer_addr": "127.0.0.1:8040"
+                },
+                "log_db": {
+                    "path": "/tmp/cluster/servers/delta/log_db"
+                },
+                "data_db": {
+                    "path": "/tmp/cluster/servers/delta/data_db"
+                }
+            }
+        },
+        "epsilon": {
+            "base": "../../server/tests/local-server.toml",
+            "overwrite": {
+                "server": {
+                    "listen_peer_addr": "127.0.0.1:8050",
+                    "listen_client_addr": "127.0.0.1:8051",
+                    "monitor_addr": "127.0.0.1:9000",
+                    "public_peer_addr": "127.0.0.1:8050"
+                },
+                "log_db": {
+                    "path": "/tmp/cluster/servers/epsilon/log_db"
+                },
+                "data_db": {
+                    "path": "/tmp/cluster/servers/epsilon/data_db"
+                }
+            }
+        }
+    }
+}

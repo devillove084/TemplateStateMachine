@@ -1,0 +1,24 @@
+{
+    "servers": {
+        "alpha": {
+            "ip": "127.0.0.1",
+            "client_port": 8011
+        },
+        "beta": {
+            "ip": "127.0.0.1",
+            "client_port": 8021
+        },
+        "gamma": {
+            "ip": "127.0.0.1",
+            "client_port": 8031
+        },
+        "delta": {
+            "ip": "127.0.0.1",
+            "client_port": 8041
+        },
+        "epsilon": {
+            "ip": "127.0.0.1",
+            "client_port": 8051
+        }
+    }
+}
