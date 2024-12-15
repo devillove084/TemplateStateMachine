@@ -1,12 +1,11 @@
-use utils::codec;
-
 use std::io;
 
 use anyhow::Result;
+use consensus::codec;
 use numeric_cast::NumericCast;
-use rocksdb::{WriteBatch, DB};
-use serde::de::DeserializeOwned;
+use rocksdb::{DB, WriteBatch};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 pub type DBResult<T> = Result<T, rocksdb::Error>;
 

@@ -1,5 +1,4 @@
-use utils::bytes_str::BytesStr;
-
+use consensus::bytes_str::BytesStr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

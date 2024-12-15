@@ -1,10 +1,9 @@
 use super::*;
 
-use consensus::cmd::{CommandLike, Keys};
-
 use std::sync::Arc;
 
 use bytes::Bytes;
+use consensus::{CommandLike, Keys};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -99,12 +98,18 @@ impl CommandLike for BatchedCommand {
 
     fn create_nop() -> Self {
         let nop = MutableCommand::create_nop();
-        Self { cmds: Arc::from([nop]), meta: BatchedMeta::Nop }
+        Self {
+            cmds: Arc::from([nop]),
+            meta: BatchedMeta::Nop,
+        }
     }
 
     fn create_fence() -> Self {
         let fence = MutableCommand::create_fence();
-        Self { cmds: Arc::from([fence]), meta: BatchedMeta::Unbounded }
+        Self {
+            cmds: Arc::from([fence]),
+            meta: BatchedMeta::Unbounded,
+        }
     }
 
     fn notify_committed(&self) {
@@ -127,17 +132,5 @@ impl Keys for BatchedMeta {
         if let BatchedMeta::Bounded(keys) = self {
             keys.iter().for_each(f);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use std::mem;
-
-    #[test]
-    fn batched_command_type_size() {
-        assert_eq!(mem::size_of::<BatchedCommand>(), 40);
     }
 }

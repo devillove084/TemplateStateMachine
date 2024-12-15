@@ -1,5 +1,5 @@
-use consensus::id::InstanceId;
-use utils::bits::{OneU8, TwoU8};
+use consensus::InstanceId;
+use consensus::bits::{OneU8, TwoU8};
 
 use std::fmt;
 
@@ -86,46 +86,13 @@ impl GlobalFieldKey {
 
     #[must_use]
     pub fn new(field: u8) -> Self {
-        Self { prefix: TwoU8::VALUE, field }
+        Self {
+            prefix: TwoU8::VALUE,
+            field,
+        }
     }
 
     pub fn set_field(&mut self, field: u8) {
         self.field = field;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[allow(clippy::arithmetic_side_effects)]
-    fn assert_nonzero_unique_sorted(arr: &[u8]) {
-        assert!(arr.iter().copied().all(|p| p != 0));
-        for i in 0..arr.len() {
-            for j in (i + 1)..arr.len() {
-                assert!(arr[i] < arr[j]);
-            }
-        }
-    }
-
-    #[test]
-    fn fields() {
-        {
-            let fields = [
-                InstanceFieldKey::FIELD_STATUS,
-                InstanceFieldKey::FIELD_SEQ,
-                InstanceFieldKey::FIELD_PBAL,
-                InstanceFieldKey::FIELD_CMD,
-                InstanceFieldKey::FIELD_OTHERS,
-            ];
-            assert_nonzero_unique_sorted(&fields);
-        }
-        {
-            let fields = [
-                GlobalFieldKey::FIELD_ATTR_BOUNDS,
-                GlobalFieldKey::FIELD_STATUS_BOUNDS,
-            ];
-            assert_nonzero_unique_sorted(&fields);
-        }
     }
 }

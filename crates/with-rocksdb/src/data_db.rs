@@ -1,16 +1,12 @@
 use crate::cmd::{BatchedCommand, CommandKind, Del, Get, Set};
 
-use consensus::exec::ExecNotify;
-use consensus::id::InstanceId;
-use consensus::store::DataStore;
-use utils::lock::with_mutex;
-
 use std::sync::Arc;
 
 use anyhow::Result;
 use asc::Asc;
 use bytes::Bytes;
 use camino::Utf8Path;
+use consensus::{DataStore, ExecNotify, InstanceId, lock::with_mutex};
 use numeric_cast::NumericCast;
 use parking_lot::Mutex as SyncMutex;
 use rocksdb::DB;
@@ -30,7 +26,10 @@ pub struct Metrics {
 impl DataDb {
     pub fn new(path: &Utf8Path) -> Result<Arc<Self>> {
         let db = DB::open_default(path)?;
-        let metrics = SyncMutex::new(Metrics { executed_batched_cmd_count: 0, executed_single_cmd_count: 0 });
+        let metrics = SyncMutex::new(Metrics {
+            executed_batched_cmd_count: 0,
+            executed_single_cmd_count: 0,
+        });
         Ok(Arc::new(Self { db, metrics }))
     }
 
@@ -73,7 +72,8 @@ impl DataDb {
             }
         }
         with_mutex(&self.metrics, |m| {
-            m.executed_single_cmd_count = m.executed_single_cmd_count.wrapping_add(single_cmd_count);
+            m.executed_single_cmd_count =
+                m.executed_single_cmd_count.wrapping_add(single_cmd_count);
             m.executed_batched_cmd_count = m.executed_batched_cmd_count.wrapping_add(1)
         });
         debug!(?id, "cmd executed");

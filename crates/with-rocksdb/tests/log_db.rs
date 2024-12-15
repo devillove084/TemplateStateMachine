@@ -1,11 +1,11 @@
-use consensus::acc::Acc;
-use consensus::deps::Deps;
-use consensus::id::{Ballot, InstanceId, LocalInstanceId, ReplicaId, Round, Seq};
-use consensus::ins::Instance;
-use consensus::status::Status;
-use consensus::store::UpdateMode;
-use utils::clone;
-use utils::tracing::setup_tracing;
+use consensus::Acc;
+use consensus::Deps;
+use consensus::Instance;
+use consensus::Status;
+use consensus::UpdateMode;
+use consensus::clone;
+use consensus::tracing::setup_tracing;
+use consensus::{Ballot, InstanceId, LocalInstanceId, ReplicaId, Round, Seq};
 use with_rocksdb::cmd::{BatchedCommand, CommandKind, Get, MutableCommand};
 use with_rocksdb::log_db::LogDb;
 
@@ -14,10 +14,10 @@ use std::{env, fs};
 use anyhow::Result;
 use camino::Utf8Path;
 
-#[test]
-fn log_db() -> Result<()> {
+#[tokio::test]
+async fn log_db() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "with-rocksdb=debug")
+        unsafe { env::set_var("RUST_LOG", "with-rocksdb=debug") }
     }
     setup_tracing();
 
@@ -30,7 +30,7 @@ fn log_db() -> Result<()> {
 
     {
         let id = InstanceId(1.into(), 1.into());
-        let ins = log_db.load(id)?;
+        let ins = log_db.load(id).await?;
         assert!(ins.is_none());
     }
 
@@ -38,7 +38,10 @@ fn log_db() -> Result<()> {
     let ins = {
         let pbal = Ballot(Round::ZERO, 1.into());
         let cmd = BatchedCommand::from_vec(vec![MutableCommand {
-            kind: CommandKind::Get(Get { key: "hello".into(), tx: None }),
+            kind: CommandKind::Get(Get {
+                key: "hello".into(),
+                tx: None,
+            }),
             notify: None,
         }]);
         let seq = Seq::from(2);
@@ -47,16 +50,24 @@ fn log_db() -> Result<()> {
         let status = Status::PreAccepted;
         let acc = Acc::from_iter([ReplicaId::from(1)]);
 
-        Instance { pbal, cmd, seq, deps, abal, status, acc }
+        Instance {
+            pbal,
+            cmd,
+            seq,
+            deps,
+            abal,
+            status,
+            acc,
+        }
     };
 
     {
         clone!(ins);
-        log_db.save(id, ins, UpdateMode::Full)?;
+        log_db.save(id, ins, UpdateMode::Full).await?;
     }
 
     {
-        let ans = log_db.load(id)?.unwrap();
+        let ans = log_db.load(id).await?.unwrap();
         assert_eq!(ans.pbal, ins.pbal);
         assert_eq!(ans.seq, ins.seq);
         assert_eq!(ans.deps, ins.deps);

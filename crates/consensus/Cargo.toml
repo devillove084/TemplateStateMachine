@@ -1,7 +1,9 @@
+cargo-features = ["edition2024"]
+
 [package]
 name = "consensus"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -9,7 +11,6 @@ anyhow = "1.0.92"
 async-trait = "0.1.83"
 asc = { version = "0.1.1", features = ["serde"] }
 dashmap = "6.1.0"
-utils = { path = "../utils" }
 fnv = "1.0.7"
 futures-util = "0.3.31"
 numeric_cast = "0.2.1"
@@ -20,12 +21,23 @@ rand = "0.8.5"
 scopeguard = "1.2.0"
 serde = { version = "1.0.214", features = ["derive"] }
 tokio = { version = "1.41.0", features = ["full"] }
-tracing = "0.1.40"
+tracing = "0.1.41"
 opendal = "0.50.1"
-bytes = "1.5"
+bytes = { version = "1.5", features = ["serde"] }
 url = "2"
+bincode = "1.3.3"
+bytemuck = { version = "1.18.0", features = ["derive"] }
+camino = { version = "1.1.9", features = ["serde1"] }
+tokio-util = "0.7.13"
+roaring = "0.10.9"
+tracing-subscriber = { version = "0.3", features = ["alloc", "local-time", "fmt", "env-filter"] }
+simdutf8 = "0.1.5"
+toml = "0.8.19"
+serde_json = "1.0.133"
+wgp = "0.2.0"
+clap = { version = "4.5.18", features = ["derive"] }
+crossbeam-queue = "0.3.11"
 
 [features]
 default = ["storage-memory"]
-
 storage-memory = ["opendal/services-memory"]

@@ -1,32 +1,29 @@
-//! <https://github.com/tikv/rust-rocksdb>
-
 use crate::cmd::BatchedCommand;
 use crate::db_utils::{get_value, put_small_value, put_value};
 use crate::log_key::{GlobalFieldKey, InstanceFieldKey};
 
-use consensus::acc::Acc;
-use consensus::bounds::{AttrBounds, SavedStatusBounds, StatusBounds, StatusMap};
-use consensus::deps::Deps;
-use consensus::id::{Ballot, InstanceId, LocalInstanceId, ReplicaId, Seq};
-use consensus::ins::Instance;
-use consensus::status::Status;
-use consensus::store::{LogStore, UpdateMode};
+use consensus::Acc;
+use consensus::Deps;
+use consensus::Instance;
+use consensus::Status;
+use consensus::{AttrBounds, SavedStatusBounds, StatusBounds, StatusMap};
+use consensus::{Ballot, InstanceId, LocalInstanceId, ReplicaId, Seq};
+use consensus::{LogStore, UpdateMode};
 
-use utils::cmp::max_assign;
-use utils::codec;
-use utils::onemap::OneMap;
+use consensus::cmp::max_assign;
+use consensus::codec;
+use consensus::onemap::OneMap;
 
 use std::ops::Not;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use bytemuck::bytes_of;
 use bytemuck::checked::{from_bytes, try_from_bytes};
 use camino::Utf8Path;
 use ordered_vecmap::VecMap;
-use rocksdb::{DBRawIterator, WriteBatch, DB};
-use tokio::sync::oneshot;
+use rocksdb::{DB, DBRawIterator, WriteBatch};
 use tracing::debug;
 
 pub struct LogDb {
@@ -39,7 +36,7 @@ impl LogDb {
         Ok(Arc::new(Self { db }))
     }
 
-    pub fn save(
+    pub async fn save(
         self: &Arc<Self>,
         id: InstanceId,
         ins: Instance<BatchedCommand>,
@@ -89,7 +86,10 @@ impl LogDb {
         Ok(())
     }
 
-    pub fn load(self: &Arc<Self>, id: InstanceId) -> Result<Option<Instance<BatchedCommand>>> {
+    pub async fn load(
+        self: &Arc<Self>,
+        id: InstanceId,
+    ) -> Result<Option<Instance<BatchedCommand>>> {
         // <https://github.com/facebook/rocksdb/wiki/Basic-Operations#iteration>
         // <https://github.com/facebook/rocksdb/wiki/Iterator>
 
@@ -138,23 +138,31 @@ impl LogDb {
         let others: (Deps, Ballot, Acc) = next_field!(FIELD_OTHERS);
         let (deps, abal, acc) = others;
 
-        let ins = Instance { pbal, cmd, seq, deps, abal, status, acc };
+        let ins = Instance {
+            pbal,
+            cmd,
+            seq,
+            deps,
+            abal,
+            status,
+            acc,
+        };
 
         Ok(Some(ins))
     }
 
-    pub fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
+    pub async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
         let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_PBAL);
         put_small_value(&mut &self.db, bytes_of(&log_key), &pbal)
     }
 
-    pub fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
+    pub async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
         let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_PBAL);
         get_value(&self.db, bytes_of(&log_key))
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn update_status(self: &Arc<Self>, id: InstanceId, status: Status) -> Result<()> {
+    pub async fn update_status(self: &Arc<Self>, id: InstanceId, status: Status) -> Result<()> {
         let t0 = Instant::now();
         let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_STATUS);
         let result = put_small_value(&mut &self.db, bytes_of(&log_key), &status);
@@ -162,7 +170,11 @@ impl LogDb {
         result
     }
 
-    pub fn save_bounds(self: &Arc<Self>, attr: AttrBounds, status: SavedStatusBounds) -> Result<()> {
+    pub async fn save_bounds(
+        self: &Arc<Self>,
+        attr: AttrBounds,
+        status: SavedStatusBounds,
+    ) -> Result<()> {
         let mut buf = Vec::new();
         let mut wb = WriteBatch::default();
         {
@@ -200,17 +212,21 @@ impl LogDb {
         iter.status()?;
         ensure!(iter.valid());
         assert_eq!(bytes_of(&log_key), iter.key().unwrap());
-        let saved_status_bounds: SavedStatusBounds = codec::deserialize_owned(iter.value().unwrap())?;
+        let saved_status_bounds: SavedStatusBounds =
+            codec::deserialize_owned(iter.value().unwrap())?;
 
         Ok(Some((attr_bounds, saved_status_bounds)))
     }
 
-    pub fn load_bounds(self: &Arc<Self>) -> Result<(AttrBounds, StatusBounds)> {
+    pub async fn load_bounds(self: &Arc<Self>) -> Result<(AttrBounds, StatusBounds)> {
         let mut iter = self.db.raw_iterator();
 
         let (mut attr_bounds, saved_status_bounds) =
             self.load_bounds_optional(&mut iter)?.unwrap_or_else(|| {
-                let attr_bounds = AttrBounds { max_seq: Seq::ZERO, max_lids: VecMap::new() };
+                let attr_bounds = AttrBounds {
+                    max_seq: Seq::ZERO,
+                    max_lids: VecMap::new(),
+                };
                 let saved_status_bounds = SavedStatusBounds::default();
                 (attr_bounds, saved_status_bounds)
             });
@@ -224,13 +240,14 @@ impl LogDb {
                 executed: OneMap::new(0),
             };
 
-            let mut merge = |map: &VecMap<ReplicaId, LocalInstanceId>,
-                             project: fn(&mut StatusMap) -> &mut OneMap| {
-                for &(rid, lid) in map {
-                    let m = maps.entry(rid).or_insert_with(create_default);
-                    ((project)(m)).set_bound(lid.raw_value());
-                }
-            };
+            let mut merge =
+                |map: &VecMap<ReplicaId, LocalInstanceId>,
+                 project: fn(&mut StatusMap) -> &mut OneMap| {
+                    for &(rid, lid) in map {
+                        let m = maps.entry(rid).or_insert_with(create_default);
+                        ((project)(m)).set_bound(lid.raw_value());
+                    }
+                };
 
             merge(&saved_status_bounds.known_up_to, |m| &mut m.known);
             merge(&saved_status_bounds.committed_up_to, |m| &mut m.committed);
@@ -289,7 +306,11 @@ impl LogDb {
                 let seq: Seq = codec::deserialize_owned(iter.value().unwrap())?;
 
                 max_assign(&mut attr_bounds.max_seq, seq);
-                attr_bounds.max_lids.entry(rid).and_modify(|l| max_assign(l, lid)).or_insert(lid);
+                attr_bounds
+                    .max_lids
+                    .entry(rid)
+                    .and_modify(|l| max_assign(l, lid))
+                    .or_insert(lid);
                 status_bounds.set(InstanceId(rid, lid), status);
 
                 lid = lid.add_one();
@@ -306,106 +327,73 @@ impl LogDb {
     }
 }
 
+#[async_trait::async_trait]
 impl LogStore<BatchedCommand> for LogDb {
-    fn save(
+    async fn save(
         self: &Arc<Self>,
         id: InstanceId,
         ins: Instance<BatchedCommand>,
         mode: UpdateMode,
-    ) -> oneshot::Receiver<Result<()>> {
-        let (tx, rx) = oneshot::channel();
+    ) -> Result<()> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::save(&this, id, ins, mode);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::save(&this, id, ins, mode).await
     }
 
-    fn load(self: &Arc<Self>, id: InstanceId) -> oneshot::Receiver<Result<Option<Instance<BatchedCommand>>>> {
-        let (tx, rx) = oneshot::channel();
+    async fn load(self: &Arc<Self>, id: InstanceId) -> Result<Option<Instance<BatchedCommand>>> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::load(&this, id);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::load(&this, id).await
     }
 
-    fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> oneshot::Receiver<Result<()>> {
-        let (tx, rx) = oneshot::channel();
+    async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::save_pbal(&this, id, pbal);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::save_pbal(&this, id, pbal).await
     }
 
-    fn load_pbal(self: &Arc<Self>, id: InstanceId) -> oneshot::Receiver<Result<Option<Ballot>>> {
-        let (tx, rx) = oneshot::channel();
+    async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::load_pbal(&this, id);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::load_pbal(&this, id).await
     }
 
-    fn save_bounds(
+    async fn save_bounds(
         self: &Arc<Self>,
         attr_bounds: AttrBounds,
         status_bounds: SavedStatusBounds,
-    ) -> oneshot::Receiver<Result<()>> {
-        let (tx, rx) = oneshot::channel();
+    ) -> Result<()> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::save_bounds(&this, attr_bounds, status_bounds);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::save_bounds(&this, attr_bounds, status_bounds).await
     }
 
-    fn load_bounds(self: &Arc<Self>) -> oneshot::Receiver<Result<(AttrBounds, StatusBounds)>> {
-        let (tx, rx) = oneshot::channel();
+    async fn load_bounds(self: &Arc<Self>) -> Result<(AttrBounds, StatusBounds)> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::load_bounds(&this);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::load_bounds(&this).await
     }
 
-    fn update_status(self: &Arc<Self>, id: InstanceId, status: Status) -> oneshot::Receiver<Result<()>> {
-        let (tx, rx) = oneshot::channel();
+    async fn update_status(self: &Arc<Self>, id: InstanceId, status: Status) -> Result<()> {
         let this = Arc::clone(self);
-        let task = move || {
-            let result = LogDb::update_status(&this, id, status);
-            let _ = tx.send(result);
-        };
-        tokio::task::spawn_blocking(task);
-        rx
+        LogDb::update_status(&this, id, status).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use consensus::deps::{Deps, MutableDeps};
-    use consensus::id::{Ballot, InstanceId, ReplicaId, Round};
-    use consensus::status::Status;
+    use consensus::Acc;
+    use consensus::Instance;
+    use consensus::Status;
+    use consensus::{Ballot, InstanceId, LocalInstanceId, ReplicaId, Round, Seq};
+    use consensus::{Deps, MutableDeps};
 
+    use consensus::UpdateMode;
+    use consensus::codec;
     use ordered_vecmap::VecSet;
-    use utils::codec;
 
     use std::io;
 
+    use anyhow::Result;
     use numeric_cast::NumericCast;
+    use tempdir::TempDir;
+
+    use crate::cmd::{BatchedCommand, CommandKind, Get, MutableCommand};
+    use crate::log_db::LogDb;
 
     #[test]
     fn tuple_ref_serde() {
@@ -422,7 +410,8 @@ mod tests {
 
         let bytes = codec::serialize(input_tuple).unwrap();
 
-        let output_tuple: (Deps, Status, VecSet<ReplicaId>) = codec::deserialize_owned(&bytes).unwrap();
+        let output_tuple: (Deps, Status, VecSet<ReplicaId>) =
+            codec::deserialize_owned(&bytes).unwrap();
 
         assert_eq!(input_tuple.0, &output_tuple.0);
         assert_eq!(input_tuple.1, output_tuple.1);
@@ -444,5 +433,42 @@ mod tests {
         let output_pbal: Ballot = codec::deserialize_owned(value).unwrap();
 
         assert_eq!(input_pbal, output_pbal);
+    }
+
+    #[tokio::test]
+    async fn test_rocksdb_log_store() -> Result<()> {
+        let temp_dir = TempDir::new("rocksdb_test")?;
+        let db_path = temp_dir.path().to_str().unwrap();
+
+        let rocksdb_log_store = LogDb::new(db_path.into()).unwrap();
+
+        let instance_id = InstanceId::new(ReplicaId::from(10), LocalInstanceId::from(11));
+        let cmd = BatchedCommand::from_vec(vec![MutableCommand {
+            kind: CommandKind::Get(Get {
+                key: "hello".into(),
+                tx: None,
+            }),
+            notify: None,
+        }]);
+
+        let instance = Instance {
+            pbal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            cmd: cmd,
+            seq: Seq::from(1),
+            deps: Deps::default(),
+            abal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            status: Status::PreAccepted,
+            acc: Acc::default(),
+        };
+
+        rocksdb_log_store
+            .save(instance_id, instance.clone(), UpdateMode::Full)
+            .await?;
+
+        let loaded_instance = rocksdb_log_store.load(instance_id).await?;
+        assert!(loaded_instance.is_some());
+        assert_eq!(loaded_instance.unwrap().pbal, instance.pbal);
+
+        Ok(())
     }
 }

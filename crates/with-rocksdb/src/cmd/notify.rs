@@ -1,4 +1,4 @@
-use utils::stepper::Stepper;
+use consensus::stepper::Stepper;
 
 pub struct CommandNotify(Stepper);
 
