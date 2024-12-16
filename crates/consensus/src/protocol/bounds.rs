@@ -8,7 +8,7 @@ use ordered_vecmap::VecMap;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AttrBounds {
     pub max_seq: Seq,
     pub max_lids: VecMap<ReplicaId, LocalInstanceId>,
@@ -21,6 +21,7 @@ pub struct SavedStatusBounds {
     pub executed_up_to: VecMap<ReplicaId, LocalInstanceId>,
 }
 
+#[derive(Default)]
 pub struct StatusBounds(VecMap<ReplicaId, StatusMap>);
 
 #[derive(Default)]

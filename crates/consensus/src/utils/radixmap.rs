@@ -97,14 +97,14 @@ impl<T> Bucket<T> {
     }
 
     unsafe fn init_with(&mut self, idx: u8, g: impl FnOnce() -> T) -> (bool, &mut T) {
-        let slot = self.slots.get_unchecked_mut(idx as usize);
+        let slot = unsafe { self.slots.get_unchecked_mut(idx as usize) };
         let is_first = is_init(self.inited, idx).not();
         if is_first {
             let val = g();
             slot.write(val);
             set_init(&mut self.inited, idx);
         }
-        (is_first, slot.assume_init_mut())
+        (is_first, unsafe { slot.assume_init_mut() })
     }
 }
 

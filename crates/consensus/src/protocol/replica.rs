@@ -69,7 +69,7 @@ where
     join_tx: SyncMutex<Option<mpsc::Sender<JoinOk>>>,
     sync_tx: DashMap<SyncId, mpsc::Sender<SyncLogOk>>,
 
-    graph: Graph<C>,
+    pub graph: Graph<C>,
     data_store: Arc<D>,
 
     network: N,
@@ -320,6 +320,7 @@ where
         let t0 = Instant::now();
 
         let result = match msg {
+            // ? Why use pin here
             Message::PreAccept(msg) => Box::pin(self.handle_preaccept(msg)).await,
             Message::PreAcceptOk(PreAcceptOk { id, .. }) => {
                 Box::pin(self.resume_propose(id, msg)).await //

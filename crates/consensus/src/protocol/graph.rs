@@ -37,7 +37,7 @@ pub struct InsNode<C> {
     pub cmd: C,
     pub seq: Seq,
     pub deps: Deps,
-    status: SyncMutex<ExecStatus>,
+    pub status: SyncMutex<ExecStatus>,
 }
 
 impl<C> InsNode<C> {

@@ -23,7 +23,7 @@ pub struct PreAccept<C> {
     pub acc: Acc,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreAcceptOk {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -31,7 +31,7 @@ pub struct PreAcceptOk {
     pub pbal: Ballot,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreAcceptDiff {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -41,7 +41,7 @@ pub struct PreAcceptDiff {
     pub deps: Deps,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Accept<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -53,7 +53,7 @@ pub struct Accept<C> {
     pub acc: Acc,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptOk {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -61,7 +61,7 @@ pub struct AcceptOk {
     pub pbal: Ballot,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commit<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -73,7 +73,7 @@ pub struct Commit<C> {
     pub acc: Acc,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prepare {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -82,7 +82,7 @@ pub struct Prepare {
     pub known: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrepareNack {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -90,14 +90,14 @@ pub struct PrepareNack {
     pub pbal: Ballot,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrepareUnchosen {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrepareOk<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
@@ -111,63 +111,63 @@ pub struct PrepareOk<C> {
     pub acc: Acc,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Join {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub addr: SocketAddr,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinOk {
     pub sender: ReplicaId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Leave {
     pub sender: ReplicaId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeRtt {
     pub sender: ReplicaId,
     pub time: LocalInstant,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeRttOk {
     pub sender: ReplicaId,
     pub time: LocalInstant,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AskLog {
     pub sender: ReplicaId,
     pub addr: SocketAddr,
     pub known_up_to: VecMap<ReplicaId, LocalInstanceId>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncLog<C> {
     pub sender: ReplicaId,
     pub sync_id: SyncId,
     pub instances: Vec<(InstanceId, Instance<C>)>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncLogOk {
     pub sender: ReplicaId,
     pub sync_id: SyncId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerBounds {
     pub sender: ReplicaId,
     pub committed_up_to: Option<VecMap<ReplicaId, LocalInstanceId>>,
     pub executed_up_to: Option<VecMap<ReplicaId, LocalInstanceId>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message<C> {
     PreAccept(PreAccept<C>),
     PreAcceptOk(PreAcceptOk),
