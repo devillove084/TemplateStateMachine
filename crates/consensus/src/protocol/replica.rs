@@ -14,12 +14,12 @@ use super::peers::Peers;
 use super::status::{ExecStatus, Status};
 
 use crate::clone;
+use crate::lock::with_async_mutex;
 use crate::storage::{DataStore, LogStore, UpdateMode};
 use crate::utils::chan::{self, recv_timeout};
 use crate::utils::cmp::max_assign;
 use crate::utils::flag_group::FlagGroup;
 use crate::utils::iter::map_collect;
-use crate::utils::lock::with_mutex;
 use crate::utils::time::LocalInstant;
 
 use std::cmp::Ordering;
@@ -79,7 +79,7 @@ where
     exec_row_locks: DashMap<ReplicaId, Arc<AsyncMutex<()>>>,
     executing_limit: Arc<Semaphore>,
 
-    metrics: SyncMutex<Metrics>,
+    metrics: AsyncMutex<Metrics>,
 
     probe_rtt_countdown: AtomicU64,
 }
@@ -231,7 +231,7 @@ where
             config.execution_limits.max_task_num.numeric_cast(),
         ));
 
-        let metrics = SyncMutex::new(Metrics {
+        let metrics = AsyncMutex::new(Metrics {
             preaccept_fast_path: 0,
             preaccept_slow_path: 0,
             recover_nop_count: 0,
@@ -267,14 +267,19 @@ where
         &self.config
     }
 
+    #[cfg(test)]
+    pub fn get_propose_instance_sender(&self, instance_id: InstanceId) -> mpsc::Sender<Message<C>> {
+        self.propose_tx.get(&instance_id).expect("get propose sender").clone()
+    }
+
     #[inline]
     pub fn network(&self) -> &N {
         &self.network
     }
 
     #[inline]
-    pub fn metrics(&self) -> Metrics {
-        with_mutex(&self.metrics, |m| m.clone())
+    pub async fn metrics(&self) -> Metrics {
+        with_async_mutex(&self.metrics, |m| m.clone()).await
     }
 
     #[inline]
@@ -311,6 +316,15 @@ where
         }
     }
 
+    #[cfg(test)]
+    pub async fn handle_messages(self: &Arc<Self>, mut rx: mpsc::Receiver<Message<C>>) {
+        while let Some(msg) = rx.recv().await {
+            if let Err(e) = self.handle_message(msg).await {
+                eprintln!("Error handling message: {:?}", e);
+            }
+        }
+    }
+
     #[tracing::instrument(skip_all, fields(rid = ?self.rid, epoch = ?self.epoch.load()))]
     pub async fn handle_message(self: &Arc<Self>, msg: Message<C>) -> Result<()> {
         debug!(msg_variant_name = ?msg.variant_name());
@@ -323,10 +337,12 @@ where
             // ? Why use pin here
             Message::PreAccept(msg) => Box::pin(self.handle_preaccept(msg)).await,
             Message::PreAcceptOk(PreAcceptOk { id, .. }) => {
-                Box::pin(self.resume_propose(id, msg)).await //
+                println!("Replica received PreAcceptOk: {:?}", id);
+                Box::pin(self.resume_propose(id, msg)).await
             }
             Message::PreAcceptDiff(PreAcceptDiff { id, .. }) => {
-                Box::pin(self.resume_propose(id, msg)).await //
+                println!("Replica received PreAcceptDiff: {:?}", id);
+                Box::pin(self.resume_propose(id, msg)).await
             }
             Message::Accept(msg) => {
                 Box::pin(self.handle_accept(msg)).await //
@@ -420,16 +436,16 @@ where
         self.log.load(id).await?;
         let cmd = self
             .log
-            .with_cached_ins(id, |ins| ins.unwrap().cmd.clone())
+            .with_cached_instance(id, |instance| instance.unwrap().cmd.clone())
             .await;
         Ok((cmd, UpdateMode::Partial))
     }
 
     async fn is_status_changed(&self, id: InstanceId, expected: Status) -> bool {
         self.log
-            .with_cached_ins(id, |ins| {
-                let ins = ins.unwrap();
-                ins.status != expected
+            .with_cached_instance(id, |instance| {
+                let instance = instance.unwrap();
+                instance.status != expected
             })
             .await
     }
@@ -450,31 +466,33 @@ where
     }
 
     #[tracing::instrument(skip_all, fields(rid=?self.rid))]
-    pub async fn run_propose(self: &Arc<Self>, cmd: C) -> Result<()> {
+    pub async fn run_propose(self: &Arc<Self>, cmd: C) -> Result<InstanceId> {
         let id = self
             .with(|s| InstanceId(self.rid, s.lid_head.gen_next()))
             .await;
 
-        let pbal = Ballot(Round::ZERO, self.rid);
+        let propose_ballot = Ballot(Round::ZERO, self.rid);
         let acc = Acc::from_mutable(MutableAcc::with_capacity(1));
 
         debug!(?id, "run_propose");
 
         let ins_guard = self.log.lock_instance(id).await;
 
-        Box::pin(self.phase_preaccept(ins_guard, id, pbal, Some(cmd), acc)).await
+        let _ = Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, Some(cmd), acc)).await;
+        Ok(id)
     }
 
-    #[tracing::instrument(skip_all, fields(id = ?id, pbal=?pbal))]
+    #[tracing::instrument(skip_all, fields(id = ?id, propose_ballot=?propose_ballot))]
     async fn phase_preaccept(
         self: &Arc<Self>,
         ins_guard: InsGuard,
         id: InstanceId,
-        pbal: Ballot,
+        propose_ballot: Ballot,
         cmd: Option<C>,
         acc: Acc,
     ) -> Result<()> {
         debug!("phase_preaccept");
+        println!("-------> phase preaccept");
 
         let (mut rx, mut seq, mut deps, mut acc, targets) = {
             self.log.load(id).await?;
@@ -490,7 +508,7 @@ where
 
             debug!(?id, ?seq, ?deps, elapsed_us=?calc_t0.elapsed().as_micros(), "calc_attributes");
 
-            let abal = pbal;
+            let accepted_ballot = propose_ballot;
             let status = Status::PreAccepted;
 
             let acc = {
@@ -501,16 +519,16 @@ where
 
             {
                 clone!(cmd, deps, acc);
-                let ins = Instance {
-                    pbal,
+                let instance = Instance {
+                    propose_ballot,
                     cmd,
                     seq,
                     deps,
-                    abal,
+                    accepted_ballot,
                     status,
                     acc,
                 };
-                self.log.save(id, ins, mode, Some(false)).await?;
+                self.log.save(id, instance, mode, Some(false)).await?;
             }
 
             let quorum;
@@ -520,6 +538,7 @@ where
                 let mut guard = self.state.lock().await;
                 let s = &mut *guard;
 
+                // ! TODO: sub 2 not enough
                 quorum = s.peers.cluster_size().wrapping_sub(2);
                 selected_peers = s.peers.select(quorum, acc.as_ref());
                 avg_rtt = s.peers.get_avg_rtt();
@@ -542,7 +561,7 @@ where
                     sender,
                     epoch,
                     id,
-                    pbal,
+                    propose_ballot,
                     cmd: Some(cmd),
                     seq,
                     deps,
@@ -566,7 +585,7 @@ where
 
             (rx, seq, deps.into_mutable(), acc.into_mutable(), targets)
         };
-
+        println!("------> update rx, seq, deps, acc and target done");
         {
             let mut received: VecSet<ReplicaId> = VecSet::new();
             let mut all_same = true;
@@ -584,7 +603,7 @@ where
                     .expect("duration should not overflow")
             });
             debug!(?avg_rtt, timeout=?t, "calc preaccept timeout");
-
+            println!("-----------> Receive start?");
             loop {
                 match recv_timeout(&mut rx, t).await {
                     Ok(Some(msg)) => {
@@ -610,17 +629,16 @@ where
                         }
 
                         debug!("received preaccept reply");
-
-                        let pbal = match msg {
-                            PreAcceptReply::Ok(ref msg) => msg.pbal,
-                            PreAcceptReply::Diff(ref msg) => msg.pbal,
+                        let propose_ballot = match msg {
+                            PreAcceptReply::Ok(ref msg) => msg.propose_ballot,
+                            PreAcceptReply::Diff(ref msg) => msg.propose_ballot,
                         };
 
                         let ins_guard = self.log.lock_instance(id).await;
 
                         self.log.load(id).await?;
 
-                        if self.log.should_ignore_pbal(id, pbal).await {
+                        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
                             continue;
                         }
 
@@ -664,7 +682,7 @@ where
                         }
 
                         let which_path = if all_same {
-                            if pbal.0 == Round::ZERO
+                            if propose_ballot.0 == Round::ZERO
                                 && received.len() >= cluster_size.wrapping_sub(2)
                             {
                                 Some(true)
@@ -685,26 +703,28 @@ where
                         let deps = Deps::from_mutable(deps);
                         let acc = Acc::from_mutable(acc);
 
-                        debug!(?id, ?seq, ?deps, "ins attributes");
+                        debug!(?id, ?seq, ?deps, "instance attributes");
 
-                        with_mutex(&self.metrics, |m| {
+                        with_async_mutex(&self.metrics, |m| {
                             if is_fast_path {
+                                println!("Replica metrics updated: preaccept_fast_path = {:?}", m.preaccept_fast_path);
                                 m.preaccept_fast_path = m.preaccept_fast_path.wrapping_add(1);
                             } else {
+                                println!("Replica metrics updated: preaccept_slow_path = {:?}", m.preaccept_slow_path);
                                 m.preaccept_slow_path = m.preaccept_slow_path.wrapping_add(1);
                             }
-                        });
+                        }).await;
 
                         if is_fast_path {
                             debug!("fast path");
                             return Box::pin(
-                                self.phase_commit(ins_guard, id, pbal, cmd, seq, deps, acc),
+                                self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
                             )
                             .await;
                         } else {
                             debug!("slow path");
                             return Box::pin(
-                                self.phase_accept(ins_guard, id, pbal, cmd, seq, deps, acc),
+                                self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
                             )
                             .await;
                         }
@@ -736,22 +756,22 @@ where
                         let ins_guard = self.log.lock_instance(id).await;
 
                         self.log.load(id).await?;
-                        let pbal = self
+                        let propose_ballot = self
                             .log
-                            .get_cached_pbal(id)
+                            .get_cached_propose_ballot(id)
                             .await
-                            .expect("pbal should exist");
+                            .expect("propose_ballot should exist");
 
                         let cmd = None;
                         let deps = Deps::from_mutable(deps);
                         let acc = Acc::from_mutable(acc);
 
-                        with_mutex(&self.metrics, |m| {
+                        with_async_mutex(&self.metrics, |m| {
                             m.preaccept_slow_path = m.preaccept_slow_path.wrapping_add(1);
-                        });
+                        }).await;
 
                         return Box::pin(
-                            self.phase_accept(ins_guard, id, pbal, cmd, seq, deps, acc),
+                            self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
                         )
                         .await;
                     }
@@ -760,11 +780,12 @@ where
         }
 
         debug!("phase preaccept failed");
+        println!("-----------> Receive preaccept failed?");
         self.remove_propose_chan(id);
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, pbal = ?msg.pbal))]
+    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, propose_ballot = ?msg.propose_ballot))]
     async fn handle_preaccept(self: &Arc<Self>, msg: PreAccept<C>) -> Result<()> {
         if msg.epoch < self.epoch.load() {
             return Ok(());
@@ -773,18 +794,18 @@ where
         debug!(seq=?msg.seq, deps=?msg.deps);
 
         let id = msg.id;
-        let pbal = msg.pbal;
+        let propose_ballot = msg.propose_ballot;
 
         let ins_guard = self.log.lock_instance(id).await;
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_pbal(id, pbal).await {
+        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
             return Ok(());
         }
         if self
             .log
-            .should_ignore_status(id, pbal, Status::PreAccepted)
+            .should_ignore_status(id, propose_ballot, Status::PreAccepted)
             .await
         {
             return Ok(());
@@ -797,11 +818,11 @@ where
             .calc_and_update_attributes(id, cmd.keys(), msg.seq, &msg.deps)
             .await;
 
-        debug!(?id, ?seq, ?deps, "ins attributes");
+        debug!(?id, ?seq, ?deps, "instance attributes");
 
         let is_changed = seq != msg.seq || deps != msg.deps;
 
-        let abal = pbal;
+        let accepted_ballot = propose_ballot;
         let status = Status::PreAccepted;
 
         let mut acc = msg.acc;
@@ -809,16 +830,16 @@ where
 
         {
             clone!(deps);
-            let ins = Instance {
-                pbal,
+            let instance = Instance {
+                propose_ballot,
                 cmd,
                 seq,
                 deps,
-                abal,
+                accepted_ballot,
                 status,
                 acc,
             };
-            self.log.save(id, ins, mode, Some(false)).await?
+            self.log.save(id, instance, mode, Some(false)).await?
         }
 
         drop(ins_guard);
@@ -839,7 +860,7 @@ where
                         sender,
                         epoch,
                         id,
-                        pbal,
+                        propose_ballot,
                         seq,
                         deps,
                     })
@@ -848,7 +869,7 @@ where
                         sender,
                         epoch,
                         id,
-                        pbal,
+                        propose_ballot,
                     })
                 },
             );
@@ -864,7 +885,7 @@ where
         self: &Arc<Self>,
         ins_guard: InsGuard,
         id: InstanceId,
-        pbal: Ballot,
+        propose_ballot: Ballot,
         cmd: Option<C>,
         seq: Seq,
         deps: Deps,
@@ -873,23 +894,23 @@ where
         debug!("phase_accept");
 
         let (mut rx, mut acc) = {
-            let abal = pbal;
+            let accepted_ballot = propose_ballot;
             let status = Status::Accepted;
 
             let (cmd, mode) = self.determine_update_mode(id, cmd).await?;
 
             {
                 clone!(cmd, deps, acc);
-                let ins = Instance {
-                    pbal,
+                let instance = Instance {
+                    propose_ballot,
                     cmd,
                     seq,
                     deps,
-                    abal,
+                    accepted_ballot,
                     status,
                     acc,
                 };
-                self.log.save(id, ins, mode, None).await?;
+                self.log.save(id, instance, mode, None).await?;
             }
 
             let mut guard = self.state.lock().await;
@@ -917,7 +938,7 @@ where
                     sender,
                     epoch,
                     id,
-                    pbal,
+                    propose_ballot,
                     cmd: Some(cmd),
                     seq,
                     deps,
@@ -968,11 +989,11 @@ where
 
                 let ins_guard = self.log.lock_instance(id).await;
 
-                let pbal = msg.pbal;
+                let propose_ballot = msg.propose_ballot;
 
                 self.log.load(id).await?;
 
-                if self.log.should_ignore_pbal(id, pbal).await {
+                if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
                     continue;
                 }
 
@@ -1001,13 +1022,13 @@ where
 
                 let (seq, deps) = self
                     .log
-                    .with_cached_ins(id, |ins| {
-                        let ins = ins.unwrap();
-                        (ins.seq, ins.deps.clone())
+                    .with_cached_instance(id, |instance| {
+                        let instance = instance.unwrap();
+                        (instance.seq, instance.deps.clone())
                     })
                     .await;
 
-                return Box::pin(self.phase_commit(ins_guard, id, pbal, cmd, seq, deps, acc)).await;
+                return Box::pin(self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc)).await;
             }
         }
 
@@ -1016,31 +1037,31 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, pbal = ?msg.pbal))]
+    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, propose_ballot = ?msg.propose_ballot))]
     async fn handle_accept(self: &Arc<Self>, msg: Accept<C>) -> Result<()> {
         if msg.epoch < self.epoch.load() {
             return Ok(());
         }
 
         let id = msg.id;
-        let pbal = msg.pbal;
+        let propose_ballot = msg.propose_ballot;
 
         let ins_guard = self.log.lock_instance(id).await;
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_pbal(id, pbal).await {
+        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
             return Ok(());
         }
         if self
             .log
-            .should_ignore_status(id, pbal, Status::Accepted)
+            .should_ignore_status(id, propose_ballot, Status::Accepted)
             .await
         {
             return Ok(());
         }
 
-        let abal = pbal;
+        let accepted_ballot = propose_ballot;
         let status = Status::Accepted;
 
         let mut acc = msg.acc;
@@ -1052,16 +1073,16 @@ where
         let (cmd, mode) = self.determine_update_mode(id, msg.cmd).await?;
 
         {
-            let ins = Instance {
-                pbal,
+            let instance = Instance {
+                propose_ballot,
                 cmd,
                 seq,
                 deps,
-                abal,
+                accepted_ballot,
                 status,
                 acc,
             };
-            self.log.save(id, ins, mode, None).await?;
+            self.log.save(id, instance, mode, None).await?;
         }
 
         drop(ins_guard);
@@ -1083,7 +1104,7 @@ where
                     sender,
                     epoch,
                     id,
-                    pbal,
+                    propose_ballot,
                 }),
             );
         }
@@ -1098,7 +1119,7 @@ where
         self: &Arc<Self>,
         ins_guard: InsGuard,
         id: InstanceId,
-        pbal: Ballot,
+        propose_ballot: Ballot,
         cmd: Option<C>,
         seq: Seq,
         deps: Deps,
@@ -1106,7 +1127,7 @@ where
     ) -> Result<()> {
         debug!("phase_commit");
 
-        let abal = pbal;
+        let accepted_ballot = propose_ballot;
         let status = Status::Committed;
 
         let (cmd, mode) = self.determine_update_mode(id, cmd).await?;
@@ -1121,16 +1142,16 @@ where
 
         {
             clone!(cmd, deps, acc);
-            let ins = Instance {
-                pbal,
+            let instance = Instance {
+                propose_ballot,
                 cmd,
                 seq,
                 deps,
-                abal,
+                accepted_ballot,
                 status,
                 acc,
             };
-            self.log.save(id, ins, mode, None).await?;
+            self.log.save(id, instance, mode, None).await?;
         }
 
         drop(ins_guard);
@@ -1148,7 +1169,7 @@ where
                 sender,
                 epoch,
                 id,
-                pbal,
+                propose_ballot,
                 cmd: Some(cmd),
                 seq,
                 deps,
@@ -1176,26 +1197,26 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, pbal = ?msg.pbal))]
+    #[tracing::instrument(skip_all, fields(sender=?msg.sender, id = ?msg.id, propose_ballot = ?msg.propose_ballot))]
     async fn handle_commit(self: &Arc<Self>, msg: Commit<C>) -> Result<()> {
         if msg.epoch < self.epoch.load() {
             return Ok(());
         }
 
         let id = msg.id;
-        let pbal = msg.pbal;
+        let propose_ballot = msg.propose_ballot;
 
         let ins_guard = self.log.lock_instance(id).await;
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_pbal(id, pbal).await {
+        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
             return Ok(());
         }
 
         if self
             .log
-            .should_ignore_status(id, pbal, Status::Committed)
+            .should_ignore_status(id, propose_ballot, Status::Committed)
             .await
         {
             return Ok(());
@@ -1203,14 +1224,14 @@ where
 
         let (cmd, mode) = self.determine_update_mode(id, msg.cmd).await?;
 
-        let status = self.log.with_cached_ins(id, |ins|match ins {
-                Some(ins) if ins.status >= Status::Committed => {
-                    if ins.seq != msg.seq || ins.deps != msg.deps {
-                        debug!(?id, ins_seq=?ins.seq, msg_seq=?msg.seq, ins_deps=?ins.deps, msg_deps=?msg.deps,"consistency incorrect");
-                        assert_eq!(ins.seq, msg.seq);
-                        assert_eq!(ins.deps, msg.deps);
+        let status = self.log.with_cached_instance(id, |instance|match instance {
+                Some(instance) if instance.status >= Status::Committed => {
+                    if instance.seq != msg.seq || instance.deps != msg.deps {
+                        debug!(?id, ins_seq=?instance.seq, msg_seq=?msg.seq, ins_deps=?instance.deps, msg_deps=?msg.deps,"consistency incorrect");
+                        assert_eq!(instance.seq, msg.seq);
+                        assert_eq!(instance.deps, msg.deps);
                     }
-                    ins.status
+                    instance.status
                 }
                 _ => Status::Committed,
             }).await;
@@ -1218,23 +1239,23 @@ where
         let seq = msg.seq;
         let deps = msg.deps;
 
-        let abal = pbal;
+        let accepted_ballot = propose_ballot;
 
         let mut acc = msg.acc;
         acc.cow_insert(self.rid);
 
         {
             clone!(cmd, deps);
-            let ins = Instance {
-                pbal,
+            let instance = Instance {
+                propose_ballot,
                 cmd,
                 seq,
                 deps,
-                abal,
+                accepted_ballot,
                 status,
                 acc,
             };
-            self.log.save(id, ins, mode, None).await?
+            self.log.save(id, instance, mode, None).await?
         }
 
         drop(ins_guard);
@@ -1277,13 +1298,13 @@ where
 
                 let is_committed = self
                     .log
-                    .with_cached_ins(id, |ins| {
-                        if let Some(ins) = ins {
-                            if ins.status >= Status::Committed {
-                                let cmd = ins.cmd.clone();
-                                let seq = ins.seq;
-                                let deps = ins.deps.clone();
-                                let status = ins.status;
+                    .with_cached_instance(id, |instance| {
+                        if let Some(instance) = instance {
+                            if instance.status >= Status::Committed {
+                                let cmd = instance.cmd.clone();
+                                let seq = instance.seq;
+                                let deps = instance.deps.clone();
+                                let status = instance.status;
                                 return Some((id, cmd, seq, deps, status));
                             }
                         }
@@ -1296,16 +1317,16 @@ where
                     return Ok(());
                 }
 
-                let pbal = match self.log.get_cached_pbal(id).await {
+                let propose_ballot = match self.log.get_cached_propose_ballot(id).await {
                     Some(Ballot(rnd, _)) => Ballot(rnd.add_one(), self.rid),
                     None => Ballot(Round::ZERO, self.rid),
                 };
 
-                debug!(?pbal);
+                debug!(?propose_ballot);
 
                 let known = self
                     .log
-                    .with_cached_ins(id, |ins| matches!(ins, Some(ins) if ins.cmd.is_nop().not()))
+                    .with_cached_instance(id, |instance| matches!(instance, Some(instance) if instance.cmd.is_nop().not()))
                     .await;
 
                 let mut guard = self.state.lock().await;
@@ -1323,7 +1344,7 @@ where
                     let sender = self.rid;
                     let epoch = self.epoch.load();
 
-                    debug!(?epoch, ?id, ?pbal, ?known, "broadcast prepare");
+                    debug!(?epoch, ?id, ?propose_ballot, ?known, "broadcast prepare");
 
                     self.network.broadcast(
                         targets,
@@ -1331,7 +1352,7 @@ where
                             sender,
                             epoch,
                             id,
-                            pbal,
+                            propose_ballot,
                             known,
                         }),
                     );
@@ -1340,7 +1361,7 @@ where
                         sender,
                         epoch,
                         id,
-                        pbal,
+                        propose_ballot,
                         known,
                     });
                 }
@@ -1351,7 +1372,7 @@ where
             {
                 let mut received: VecSet<ReplicaId> = VecSet::new();
 
-                let mut max_abal: Option<Ballot> = None;
+                let mut max_accepted_ballot: Option<Ballot> = None;
                 let mut cmd: Option<C> = None;
 
                 let mut tuples: Vec<(ReplicaId, Seq, Deps, Status, Acc)> = Vec::new();
@@ -1385,7 +1406,7 @@ where
                     let ins_guard = self.log.lock_instance(id).await;
                     self.log.load(id).await?;
                     if let PrepareReply::Ok(ref msg) = msg {
-                        if self.log.should_ignore_pbal(id, msg.pbal).await {
+                        if self.log.should_ignore_propose_ballot(id, msg.propose_ballot).await {
                             continue;
                         }
                     }
@@ -1395,30 +1416,30 @@ where
                             let _ = received.insert(msg.sender);
                         }
                         PrepareReply::Nack(msg) => {
-                            self.log.save_pbal(id, msg.pbal).await?;
+                            self.log.save_propose_ballot(id, msg.propose_ballot).await?;
                             drop(ins_guard);
                             break;
                         }
                         PrepareReply::Ok(msg) => {
                             let _ = received.insert(msg.sender);
 
-                            let is_max_abal = match max_abal {
-                                Some(ref mut max_abal) => match Ord::cmp(&msg.abal, max_abal) {
+                            let is_max_accepted_ballot = match max_accepted_ballot {
+                                Some(ref mut max_accepted_ballot) => match Ord::cmp(&msg.accepted_ballot, max_accepted_ballot) {
                                     Ordering::Less => false,
                                     Ordering::Equal => true,
                                     Ordering::Greater => {
-                                        *max_abal = msg.abal;
+                                        *max_accepted_ballot = msg.accepted_ballot;
                                         cmd = None;
                                         tuples.clear();
                                         true
                                     }
                                 },
                                 None => {
-                                    max_abal = Some(msg.abal);
+                                    max_accepted_ballot = Some(msg.accepted_ballot);
                                     true
                                 }
                             };
-                            if is_max_abal.not() {
+                            if is_max_accepted_ballot.not() {
                                 continue;
                             }
                             cmd = msg.cmd;
@@ -1441,29 +1462,29 @@ where
                         continue;
                     }
 
-                    let max_abal = match max_abal {
+                    let max_accepted_ballot = match max_accepted_ballot {
                         Some(b) => b,
                         None => continue,
                     };
 
-                    let pbal = self
+                    let propose_ballot = self
                         .log
-                        .get_cached_pbal(id)
+                        .get_cached_propose_ballot(id)
                         .await
-                        .expect("pbal should exist");
+                        .expect("propose_ballot should exist");
 
-                    debug!(?pbal, ?tuples, "recover succeeded");
-                    with_mutex(&self.metrics, |m| {
+                    debug!(?propose_ballot, ?tuples, "recover succeeded");
+                    with_async_mutex(&self.metrics, |m| {
                         m.recover_success_count = m.recover_success_count.wrapping_add(1);
-                    });
+                    }).await;
 
                     let _ = self.recovering.remove(&id);
 
                     let acc = {
                         let mut acc = self
                             .log
-                            .with_cached_ins(id, |ins| match ins {
-                                Some(ins) => MutableAcc::clone(ins.acc.as_ref()),
+                            .with_cached_instance(id, |instance| match instance {
+                                Some(instance) => MutableAcc::clone(instance.acc.as_ref()),
                                 None => MutableAcc::default(),
                             })
                             .await;
@@ -1479,7 +1500,7 @@ where
                         }
                         let deps = mem::take(deps);
                         return Box::pin(
-                            self.phase_commit(ins_guard, id, pbal, cmd, seq, deps, acc),
+                            self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
                         )
                         .await;
                     }
@@ -1490,14 +1511,14 @@ where
                         }
                         let deps = mem::take(deps);
                         return Box::pin(
-                            self.phase_accept(ins_guard, id, pbal, cmd, seq, deps, acc),
+                            self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
                         )
                         .await;
                     }
 
                     tuples.retain(|t| t.3 == Status::PreAccepted);
 
-                    let enable_accept = max_abal.0 == Round::ZERO
+                    let enable_accept = max_accepted_ballot.0 == Round::ZERO
                         && tuples.len() >= cluster_size / 2
                         && tuples.iter().all(|t| t.0 != id.0);
 
@@ -1521,7 +1542,7 @@ where
                                 let seq = attr.0;
                                 let deps = mem::take(attr.1);
                                 return Box::pin({
-                                    self.phase_accept(ins_guard, id, pbal, cmd, seq, deps, acc)
+                                    self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc)
                                 })
                                 .await;
                             }
@@ -1529,24 +1550,24 @@ where
                     }
 
                     if tuples.is_empty().not() {
-                        return Box::pin(self.phase_preaccept(ins_guard, id, pbal, cmd, acc)).await;
+                        return Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, cmd, acc)).await;
                     }
 
                     let (cmd, acc) = self
                         .log
-                        .with_cached_ins(id, |ins| match ins {
+                        .with_cached_instance(id, |instance| match instance {
                             Some(_) => (None, acc),
                             None => (Some(C::create_nop()), Acc::default()),
                         })
                         .await;
 
                     if cmd.is_some() {
-                        with_mutex(&self.metrics, |m| {
+                        with_async_mutex(&self.metrics, |m| {
                             m.recover_nop_count = m.recover_nop_count.wrapping_add(1);
-                        });
+                        }).await;
                     }
 
-                    return Box::pin(self.phase_preaccept(ins_guard, id, pbal, cmd, acc)).await;
+                    return Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, cmd, acc)).await;
                 }
             }
 
@@ -1593,26 +1614,26 @@ where
         let epoch = self.epoch.load();
 
         let reply: Result<Message<C>> = async {
-            if let Some(pbal) = self.log.get_cached_pbal(id).await {
-                if pbal >= msg.pbal {
+            if let Some(propose_ballot) = self.log.get_cached_propose_ballot(id).await {
+                if propose_ballot >= msg.propose_ballot {
                     let sender = self.rid;
                     return Ok(Message::PrepareNack(PrepareNack {
                         sender,
                         epoch,
                         id,
-                        pbal,
+                        propose_ballot,
                     }));
                 }
             }
 
-            let pbal = msg.pbal;
+            let propose_ballot = msg.propose_ballot;
 
-            self.log.save_pbal(id, pbal).await?;
+            self.log.save_propose_ballot(id, propose_ballot).await?;
 
             self.log
-                .with_cached_ins(id, |ins| {
-                    let ins = match ins {
-                        Some(ins) => ins,
+                .with_cached_instance(id, |instance| {
+                    let instance = match instance {
+                        Some(instance) => instance,
                         None => {
                             let sender = self.rid;
                             return Ok(Message::PrepareUnchosen(PrepareUnchosen {
@@ -1623,28 +1644,28 @@ where
                         }
                     };
 
-                    let cmd = if msg.known && ins.cmd.is_nop().not() {
+                    let cmd = if msg.known && instance.cmd.is_nop().not() {
                         None
                     } else {
-                        Some(ins.cmd.clone())
+                        Some(instance.cmd.clone())
                     };
 
-                    let seq = ins.seq;
-                    let deps = ins.deps.clone();
-                    let abal = ins.abal;
-                    let status = ins.status;
-                    let acc = ins.acc.clone();
+                    let seq = instance.seq;
+                    let deps = instance.deps.clone();
+                    let accepted_ballot = instance.accepted_ballot;
+                    let status = instance.status;
+                    let acc = instance.acc.clone();
 
                     let sender = self.rid;
                     Ok(Message::PrepareOk(PrepareOk {
                         sender,
                         epoch,
                         id,
-                        pbal,
+                        propose_ballot,
                         cmd,
                         seq,
                         deps,
-                        abal,
+                        accepted_ballot,
                         status,
                         acc,
                     }))
@@ -1909,12 +1930,12 @@ where
 
                 let ins_guard = self.log.lock_instance(id).await;
                 self.log.load(id).await?;
-                let ins = self.log.with_cached_ins(id, |ins| ins.cloned()).await;
+                let instance = self.log.with_cached_instance(id, |instance| instance.cloned()).await;
 
                 drop(ins_guard);
 
-                if let Some(ins) = ins {
-                    instances.push((id, ins.clone()));
+                if let Some(instance) = instance {
+                    instances.push((id, instance.clone()));
                     if instances.len() >= limit {
                         send_log(mem::take(&mut instances))
                     }
@@ -1978,16 +1999,16 @@ where
 
                     self.log.load(id).await?;
 
-                    let ins = self
+                    let instance = self
                         .log
-                        .with_cached_ins(id, |ins| match ins {
-                            Some(ins) if ins.status >= Status::Committed => Some(ins.clone()),
+                        .with_cached_instance(id, |instance| match instance {
+                            Some(instance) if instance.status >= Status::Committed => Some(instance.clone()),
                             _ => None,
                         })
                         .await;
 
-                    if let Some(ins) = ins {
-                        instances.push((id, ins.clone()));
+                    if let Some(instance) = instance {
+                        instances.push((id, instance.clone()));
 
                         if instances.len() >= limit {
                             let mut guard = self.state.lock().await;
@@ -2039,28 +2060,28 @@ where
     }
 
     async fn handle_sync_log(self: &Arc<Self>, msg: SyncLog<C>) -> Result<()> {
-        for (id, mut ins) in msg.instances {
+        for (id, mut instance) in msg.instances {
             let _ins_guard = self.log.lock_instance(id).await;
 
             self.log.load(id).await?;
 
-            let saved_pbal = self.log.get_cached_pbal(id).await;
+            let saved_propose_ballot = self.log.get_cached_propose_ballot(id).await;
 
             let opt = self
                 .log
-                .with_cached_ins(id, |saved_ins| match saved_ins {
-                    None => match saved_pbal {
-                        Some(saved_pbal) if saved_pbal > ins.abal => None,
-                        _ => Some((UpdateMode::Full, ins.status >= Status::Committed)),
+                .with_cached_instance(id, |saved_ins| match saved_ins {
+                    None => match saved_propose_ballot {
+                        Some(saved_propose_ballot) if saved_propose_ballot > instance.accepted_ballot => None,
+                        _ => Some((UpdateMode::Full, instance.status >= Status::Committed)),
                     },
                     Some(saved_ins) => {
-                        if saved_ins.status < Status::Committed && ins.status >= Status::Committed {
-                            max_assign(&mut ins.pbal, saved_ins.pbal);
-                            max_assign(&mut ins.abal, saved_ins.abal);
-                            ins.status = Status::Committed;
+                        if saved_ins.status < Status::Committed && instance.status >= Status::Committed {
+                            max_assign(&mut instance.propose_ballot, saved_ins.propose_ballot);
+                            max_assign(&mut instance.accepted_ballot, saved_ins.accepted_ballot);
+                            instance.status = Status::Committed;
 
-                            ins.acc.cow_insert(self.rid);
-                            let mode = if saved_ins.cmd.is_nop() != ins.cmd.is_nop() {
+                            instance.acc.cow_insert(self.rid);
+                            let mode = if saved_ins.cmd.is_nop() != instance.cmd.is_nop() {
                                 UpdateMode::Full
                             } else {
                                 UpdateMode::Partial
@@ -2076,15 +2097,15 @@ where
 
             if let Some((mode, needs_exec)) = opt {
                 if needs_exec {
-                    let cmd = ins.cmd.clone();
-                    let seq = ins.seq;
-                    let deps = ins.deps.clone();
-                    let status = ins.status;
+                    let cmd = instance.cmd.clone();
+                    let seq = instance.seq;
+                    let deps = instance.deps.clone();
+                    let status = instance.status;
 
-                    self.log.save(id, ins, mode, None).await?;
+                    self.log.save(id, instance, mode, None).await?;
                     self.spawn_execute(id, cmd, seq, deps, status);
                 } else {
-                    self.log.save(id, ins, mode, None).await?;
+                    self.log.save(id, instance, mode, None).await?;
                 }
             }
         }
@@ -2313,7 +2334,7 @@ where
         debug!(local_graph_nodes_count, "tarjan scc");
 
         if local_graph_nodes_count == 0 {
-            return Ok(()); // ins executed
+            return Ok(()); // instance executed
         } else if local_graph_nodes_count == 1 {
             // common case
             let node = local_graph.get_node(root).cloned().unwrap();

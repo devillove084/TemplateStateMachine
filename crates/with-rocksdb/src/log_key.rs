@@ -44,7 +44,7 @@ pub struct GlobalFieldKey {
 impl InstanceFieldKey {
     pub const FIELD_STATUS: u8 = 1;
     pub const FIELD_SEQ: u8 = 2;
-    pub const FIELD_PBAL: u8 = 3;
+    pub const FIELD_propose_ballot: u8 = 3;
     pub const FIELD_CMD: u8 = 4;
     pub const FIELD_OTHERS: u8 = 5;
 

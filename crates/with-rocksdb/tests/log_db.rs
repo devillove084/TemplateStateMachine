@@ -36,7 +36,7 @@ async fn log_db() -> Result<()> {
 
     let id = InstanceId(1.into(), 1.into());
     let ins = {
-        let pbal = Ballot(Round::ZERO, 1.into());
+        let propose_ballot = Ballot(Round::ZERO, 1.into());
         let cmd = BatchedCommand::from_vec(vec![MutableCommand {
             kind: CommandKind::Get(Get {
                 key: "hello".into(),
@@ -46,16 +46,16 @@ async fn log_db() -> Result<()> {
         }]);
         let seq = Seq::from(2);
         let deps = Deps::from_iter([(ReplicaId::from(2), LocalInstanceId::from(1))]);
-        let abal = pbal;
+        let accepted_ballot = propose_ballot;
         let status = Status::PreAccepted;
         let acc = Acc::from_iter([ReplicaId::from(1)]);
 
         Instance {
-            pbal,
+            propose_ballot,
             cmd,
             seq,
             deps,
-            abal,
+            accepted_ballot,
             status,
             acc,
         }
@@ -68,10 +68,10 @@ async fn log_db() -> Result<()> {
 
     {
         let ans = log_db.load(id).await?.unwrap();
-        assert_eq!(ans.pbal, ins.pbal);
+        assert_eq!(ans.propose_ballot, ins.propose_ballot);
         assert_eq!(ans.seq, ins.seq);
         assert_eq!(ans.deps, ins.deps);
-        assert_eq!(ans.abal, ins.abal);
+        assert_eq!(ans.accepted_ballot, ins.accepted_ballot);
         assert_eq!(ans.status, ins.status);
         assert_eq!(ans.acc, ins.acc);
 

@@ -64,10 +64,10 @@ impl LogDb {
             put_value(&mut wb, bytes_of(&log_key), &mut buf, &ins.seq)?;
         }
 
-        // pbal
+        // propose_ballot
         {
-            log_key.set_field(InstanceFieldKey::FIELD_PBAL);
-            put_value(&mut wb, bytes_of(&log_key), &mut buf, &ins.pbal)?;
+            log_key.set_field(InstanceFieldKey::FIELD_propose_ballot);
+            put_value(&mut wb, bytes_of(&log_key), &mut buf, &ins.propose_ballot)?;
         }
 
         if needs_save_cmd {
@@ -75,10 +75,10 @@ impl LogDb {
             put_value(&mut wb, bytes_of(&log_key), &mut buf, &ins.cmd)?;
         }
 
-        // (deps, abal, acc)
+        // (deps, accepted_ballot, acc)
         {
             log_key.set_field(InstanceFieldKey::FIELD_OTHERS);
-            let value = (&ins.deps, ins.abal, &ins.acc);
+            let value = (&ins.deps, ins.accepted_ballot, &ins.acc);
             put_value(&mut wb, bytes_of(&log_key), &mut buf, &value)?;
         }
 
@@ -133,17 +133,17 @@ impl LogDb {
         }
 
         let seq: Seq = next_field!(FIELD_SEQ);
-        let pbal: Ballot = next_field!(FIELD_PBAL);
+        let propose_ballot: Ballot = next_field!(FIELD_propose_ballot);
         let cmd: BatchedCommand = next_field!(FIELD_CMD);
         let others: (Deps, Ballot, Acc) = next_field!(FIELD_OTHERS);
-        let (deps, abal, acc) = others;
+        let (deps, accepted_ballot, acc) = others;
 
         let ins = Instance {
-            pbal,
+            propose_ballot,
             cmd,
             seq,
             deps,
-            abal,
+            accepted_ballot,
             status,
             acc,
         };
@@ -151,13 +151,13 @@ impl LogDb {
         Ok(Some(ins))
     }
 
-    pub async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
-        let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_PBAL);
-        put_small_value(&mut &self.db, bytes_of(&log_key), &pbal)
+    pub async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+        let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_propose_ballot);
+        put_small_value(&mut &self.db, bytes_of(&log_key), &propose_ballot)
     }
 
-    pub async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
-        let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_PBAL);
+    pub async fn load_propose_ballot(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
+        let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_propose_ballot);
         get_value(&self.db, bytes_of(&log_key))
     }
 
@@ -344,14 +344,14 @@ impl LogStore<BatchedCommand> for LogDb {
         LogDb::load(&this, id).await
     }
 
-    async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
+    async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
         let this = Arc::clone(self);
-        LogDb::save_pbal(&this, id, pbal).await
+        LogDb::save_propose_ballot(&this, id, propose_ballot).await
     }
 
-    async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
+    async fn load_propose_ballot(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
         let this = Arc::clone(self);
-        LogDb::load_pbal(&this, id).await
+        LogDb::load_propose_ballot(&this, id).await
     }
 
     async fn save_bounds(
@@ -420,19 +420,19 @@ mod tests {
 
     #[test]
     fn cursor_serde() {
-        let input_pbal = Ballot(Round::ONE, ReplicaId::ONE);
+        let input_propose_ballot = Ballot(Round::ONE, ReplicaId::ONE);
 
         let mut buf = [0u8; 64];
         let pos: usize = {
             let mut value_buf = io::Cursor::new(buf.as_mut_slice());
-            codec::serialize_into(&mut value_buf, &input_pbal).unwrap();
+            codec::serialize_into(&mut value_buf, &input_propose_ballot).unwrap();
             value_buf.position().numeric_cast()
         };
         let value = &buf[..pos];
 
-        let output_pbal: Ballot = codec::deserialize_owned(value).unwrap();
+        let output_propose_ballot: Ballot = codec::deserialize_owned(value).unwrap();
 
-        assert_eq!(input_pbal, output_pbal);
+        assert_eq!(input_propose_ballot, output_propose_ballot);
     }
 
     #[tokio::test]
@@ -452,11 +452,11 @@ mod tests {
         }]);
 
         let instance = Instance {
-            pbal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            propose_ballot: Ballot::new(Round::ONE, ReplicaId::from(10)),
             cmd: cmd,
             seq: Seq::from(1),
             deps: Deps::default(),
-            abal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            accepted_ballot: Ballot::new(Round::ONE, ReplicaId::from(10)),
             status: Status::PreAccepted,
             acc: Acc::default(),
         };
@@ -467,7 +467,7 @@ mod tests {
 
         let loaded_instance = rocksdb_log_store.load(instance_id).await?;
         assert!(loaded_instance.is_some());
-        assert_eq!(loaded_instance.unwrap().pbal, instance.pbal);
+        assert_eq!(loaded_instance.unwrap().propose_ballot, instance.propose_ballot);
 
         Ok(())
     }

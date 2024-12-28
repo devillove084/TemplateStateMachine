@@ -58,7 +58,7 @@ impl PathBuilder {
         match field {
             1 => "status",
             2 => "seq",
-            3 => "pbal",
+            3 => "propose_ballot",
             4 => "cmd",
             5 => "others",
             6 => "attr_bounds",
@@ -143,20 +143,20 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
 
         let status_path = self.path_builder.instance_field_path(id, 1); // FIELD_STATUS
         let seq_path = self.path_builder.instance_field_path(id, 2); // FIELD_SEQ
-        let pbal_path = self.path_builder.instance_field_path(id, 3); // FIELD_PBAL
+        let propose_ballot_path = self.path_builder.instance_field_path(id, 3); // FIELD_propose_ballot
         let others_path = self.path_builder.instance_field_path(id, 5); // FIELD_OTHERS
 
         self.write_file(&status_path, &serialize(&ins.status)?)
             .await?;
         self.write_file(&seq_path, &serialize(&ins.seq)?).await?;
-        self.write_file(&pbal_path, &serialize(&ins.pbal)?).await?;
+        self.write_file(&propose_ballot_path, &serialize(&ins.propose_ballot)?).await?;
 
         if needs_save_cmd {
             let cmd_path = self.path_builder.instance_field_path(id, 4); // FIELD_CMD
             self.write_file(&cmd_path, &serialize(&ins.cmd)?).await?;
         }
 
-        let others_val = (&ins.deps, ins.abal, &ins.acc);
+        let others_val = (&ins.deps, ins.accepted_ballot, &ins.acc);
         self.write_file(&others_path, &serialize(&others_val)?)
             .await?;
 
@@ -175,7 +175,7 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
         let seq: Seq = self
             .read_file(&self.path_builder.instance_field_path(id, 2))
             .await?;
-        let pbal: Ballot = self
+        let propose_ballot: Ballot = self
             .read_file(&self.path_builder.instance_field_path(id, 3))
             .await?;
 
@@ -188,33 +188,33 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
             return Ok(None);
         };
 
-        let (deps, abal, acc): (Deps, Ballot, Acc) = self
+        let (deps, accepted_ballot, acc): (Deps, Ballot, Acc) = self
             .read_file(&self.path_builder.instance_field_path(id, 5))
             .await?;
 
         Ok(Some(Instance {
-            pbal,
+            propose_ballot,
             cmd,
             seq,
             deps,
-            abal,
+            accepted_ballot,
             status,
             acc,
         }))
     }
 
-    async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()> {
-        let path = self.path_builder.instance_field_path(id, 3); // FIELD_PBAL
-        self.write_file(&path, &serialize(&pbal)?).await
+    async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+        let path = self.path_builder.instance_field_path(id, 3); // FIELD_propose_ballot
+        self.write_file(&path, &serialize(&propose_ballot)?).await
     }
 
-    async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
-        let path = self.path_builder.instance_field_path(id, 3); // FIELD_PBAL
+    async fn load_propose_ballot(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>> {
+        let path = self.path_builder.instance_field_path(id, 3); // FIELD_propose_ballot
         if !self.file_exists(&path).await? {
             return Ok(None);
         }
-        let pbal: Ballot = self.read_file(&path).await?;
-        Ok(Some(pbal))
+        let propose_ballot: Ballot = self.read_file(&path).await?;
+        Ok(Some(propose_ballot))
     }
 
     async fn save_bounds(
@@ -364,11 +364,11 @@ mod log_store_test {
 
         let cmd = String::from_str("test").unwrap();
         let instance = Instance {
-            pbal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            propose_ballot: Ballot::new(Round::ONE, ReplicaId::from(10)),
             cmd: cmd,
             seq: Seq::from(1),
             deps: Deps::default(),
-            abal: Ballot::new(Round::ONE, ReplicaId::from(10)),
+            accepted_ballot: Ballot::new(Round::ONE, ReplicaId::from(10)),
             status: Status::PreAccepted,
             acc: Acc::default(),
         };
@@ -380,15 +380,15 @@ mod log_store_test {
         // 测试 load
         let loaded_instance = opendal_log_store.load_action(instance_id).await?;
         assert!(loaded_instance.is_some());
-        assert_eq!(loaded_instance.unwrap().abal, instance.abal);
+        assert_eq!(loaded_instance.unwrap().accepted_ballot, instance.accepted_ballot);
 
-        // // 测试 save_pbal
-        // opendal_log_store.save_pbal(instance_id, Ballot(2)).await?;
+        // // 测试 save_propose_ballot
+        // opendal_log_store.save_propose_ballot(instance_id, Ballot(2)).await?;
 
-        // // 测试 load_pbal
-        // let loaded_pbal = opendal_log_store.load_pbal(instance_id).await?;
-        // assert!(loaded_pbal.is_some());
-        // assert_eq!(loaded_pbal.unwrap(), Ballot(2));
+        // // 测试 load_propose_ballot
+        // let loaded_propose_ballot = opendal_log_store.load_propose_ballot(instance_id).await?;
+        // assert!(loaded_propose_ballot.is_some());
+        // assert_eq!(loaded_propose_ballot.unwrap(), Ballot(2));
 
         // // 测试 update_status
         // opendal_log_store

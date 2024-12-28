@@ -21,9 +21,9 @@ pub trait LogStore<C: CommandLike>: Send + Sync + 'static {
 
     async fn load(self: &Arc<Self>, id: InstanceId) -> Result<Option<Instance<C>>>;
 
-    async fn save_pbal(self: &Arc<Self>, id: InstanceId, pbal: Ballot) -> Result<()>;
+    async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()>;
 
-    async fn load_pbal(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>>;
+    async fn load_propose_ballot(self: &Arc<Self>, id: InstanceId) -> Result<Option<Ballot>>;
 
     async fn save_bounds(
         self: &Arc<Self>,

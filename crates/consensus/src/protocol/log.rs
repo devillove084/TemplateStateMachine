@@ -95,7 +95,7 @@ where
         deps.merge(prev_deps.as_ref());
         let deps = Deps::from_mutable(deps);
 
-        let needs_update_attrs = if let Some(saved) = cache.get_ins(id) {
+        let needs_update_attrs = if let Some(saved) = cache.get_instance(id) {
             saved.seq != seq || saved.deps != deps
         } else {
             true
@@ -146,7 +146,7 @@ where
 
         self.with(|cache| {
             let needs_update_attrs = needs_update_attrs.unwrap_or_else(|| {
-                if let Some(saved) = cache.get_ins(id) {
+                if let Some(saved) = cache.get_instance(id) {
                     saved.seq != ins.seq || saved.deps != ins.deps
                 } else {
                     true
@@ -158,7 +158,7 @@ where
                 cache.update_attrs(id, ins.cmd.keys(), ins.seq);
                 debug!(elapsed_us = ?t0.elapsed().as_micros(), "updated attrs id: {:?}", id);
             }
-            cache.insert_ins(id, ins);
+            cache.insert_instance(id, ins);
         })
         .await;
 
@@ -168,7 +168,7 @@ where
     }
 
     pub async fn load(&self, id: InstanceId) -> Result<()> {
-        let needs_load = self.with(|cache| cache.contains_ins(id).not()).await;
+        let needs_load = self.with(|cache| cache.contains_instance(id).not()).await;
 
         if needs_load {
             let t0 = Instant::now();
@@ -178,15 +178,15 @@ where
             match result {
                 Some(ins) => {
                     self.status_bounds.lock().set(id, ins.status);
-                    self.with(|cache| cache.insert_ins(id, ins)).await;
+                    self.with(|cache| cache.insert_instance(id, ins)).await;
                 }
                 None => {
-                    let needs_load_pbal = self
-                        .with(|cache| cache.contains_orphan_pbal(id).not())
+                    let needs_load_propose_ballot = self
+                        .with(|cache| cache.contains_orphan_propose_ballot(id).not())
                         .await;
-                    if needs_load_pbal {
-                        if let Some(pbal) = self.log_store.load_pbal(id).await? {
-                            self.with(|cache| cache.insert_orphan_pbal(id, pbal)).await;
+                    if needs_load_propose_ballot {
+                        if let Some(propose_ballot) = self.log_store.load_propose_ballot(id).await? {
+                            self.with(|cache| cache.insert_orphan_propose_ballot(id, propose_ballot)).await;
                         }
                     }
                 }
@@ -195,12 +195,12 @@ where
         Ok(())
     }
 
-    pub async fn save_pbal(&self, id: InstanceId, pbal: Ballot) -> Result<()> {
-        self.log_store.save_pbal(id, pbal).await?;
+    pub async fn save_propose_ballot(&self, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+        self.log_store.save_propose_ballot(id, propose_ballot).await?;
 
-        self.with(|cache| match cache.get_mut_ins(id) {
-            Some(ins) => ins.pbal = pbal,
-            None => cache.insert_orphan_pbal(id, pbal),
+        self.with(|cache| match cache.get_mut_instance(id) {
+            Some(ins) => ins.propose_ballot = propose_ballot,
+            None => cache.insert_orphan_propose_ballot(id, propose_ballot),
         })
         .await;
 
@@ -210,7 +210,7 @@ where
     pub async fn update_status(&self, id: InstanceId, status: Status) -> Result<()> {
         self.log_store.update_status(id, status).await?;
         self.with(|cache| {
-            if let Some(ins) = cache.get_mut_ins(id) {
+            if let Some(ins) = cache.get_mut_instance(id) {
                 if ins.status >= Status::Committed && status < Status::Committed {
                     debug!(?id, ins_status=?ins.status, new_status=?status, "consistency incorrect");
                     panic!("consistency incorrect")
@@ -223,21 +223,21 @@ where
         Ok(())
     }
 
-    pub async fn get_cached_pbal(&self, id: InstanceId) -> Option<Ballot> {
-        self.with(|cache| cache.get_pbal(id)).await
+    pub async fn get_cached_propose_ballot(&self, id: InstanceId) -> Option<Ballot> {
+        self.with(|cache| cache.get_propose_ballot(id)).await
     }
 
-    pub async fn with_cached_ins<R>(
+    pub async fn with_cached_instance<R>(
         &self,
         id: InstanceId,
         f: impl FnOnce(Option<&Instance<C>>) -> R,
     ) -> R {
-        self.with(|cache| f(cache.get_ins(id))).await
+        self.with(|cache| f(cache.get_instance(id))).await
     }
 
-    pub async fn should_ignore_pbal(&self, id: InstanceId, pbal: Ballot) -> bool {
-        if let Some(saved_pbal) = self.get_cached_pbal(id).await {
-            if saved_pbal != pbal {
+    pub async fn should_ignore_propose_ballot(&self, id: InstanceId, propose_ballot: Ballot) -> bool {
+        if let Some(saved_propose_ballot) = self.get_cached_propose_ballot(id).await {
+            if saved_propose_ballot != propose_ballot {
                 return true;
             }
         }
@@ -247,15 +247,15 @@ where
     pub async fn should_ignore_status(
         &self,
         id: InstanceId,
-        pbal: Ballot,
+        propose_ballot: Ballot,
         next_status: Status,
     ) -> bool {
-        self.with_cached_ins(id, |ins| {
+        self.with_cached_instance(id, |ins| {
             if let Some(ins) = ins {
-                let abal = ins.abal;
+                let accepted_ballot = ins.accepted_ballot;
                 let status = ins.status;
 
-                if (pbal, next_status) <= (abal, status) {
+                if (propose_ballot, next_status) <= (accepted_ballot, status) {
                     return true;
                 }
             }
@@ -305,6 +305,6 @@ where
     }
 
     pub async fn retire_instance(&self, id: InstanceId) {
-        self.with(|cache| cache.remove_ins(id)).await
+        self.with(|cache| cache.remove_instance(id)).await
     }
 }

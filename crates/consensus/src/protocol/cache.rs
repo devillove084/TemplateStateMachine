@@ -18,7 +18,7 @@ where
     C: CommandLike,
 {
     ins_cache: VecMap<ReplicaId, FnvHashMap<LocalInstanceId, Instance<C>>>,
-    pbal_cache: FnvHashMap<InstanceId, Ballot>,
+    propose_ballot_cache: FnvHashMap<InstanceId, Ballot>,
 
     max_key_map: HashMap<C::Key, MaxKey>,
     max_lid_map: VecMap<ReplicaId, MaxLid>,
@@ -62,11 +62,11 @@ where
         };
 
         let ins_cache = VecMap::new();
-        let pbal_cache = FnvHashMap::default();
+        let propose_ballot_cache = FnvHashMap::default();
 
         Self {
             ins_cache,
-            pbal_cache,
+            propose_ballot_cache,
             max_key_map,
             max_lid_map,
             max_seq,
@@ -172,53 +172,53 @@ where
     }
 
     #[must_use]
-    pub fn get_ins(&self, id: InstanceId) -> Option<&Instance<C>> {
+    pub fn get_instance(&self, id: InstanceId) -> Option<&Instance<C>> {
         let row = self.ins_cache.get(&id.0)?;
         row.get(&id.1)
     }
 
     #[must_use]
-    pub fn get_mut_ins(&mut self, id: InstanceId) -> Option<&mut Instance<C>> {
+    pub fn get_mut_instance(&mut self, id: InstanceId) -> Option<&mut Instance<C>> {
         let row = self.ins_cache.get_mut(&id.0)?;
         row.get_mut(&id.1)
     }
 
     #[must_use]
-    pub fn contains_ins(&self, id: InstanceId) -> bool {
+    pub fn contains_instance(&self, id: InstanceId) -> bool {
         match self.ins_cache.get(&id.0) {
             Some(row) => row.contains_key(&id.1),
             None => false,
         }
     }
 
-    pub fn insert_ins(&mut self, id: InstanceId, ins: Instance<C>) {
+    pub fn insert_instance(&mut self, id: InstanceId, ins: Instance<C>) {
         let row = self.ins_cache.entry(id.0).or_default();
         if row.insert(id.1, ins).is_none() {
-            self.pbal_cache.remove(&id);
+            self.propose_ballot_cache.remove(&id);
         }
     }
 
-    pub fn insert_orphan_pbal(&mut self, id: InstanceId, pbal: Ballot) {
-        self.pbal_cache.insert(id, pbal);
+    pub fn insert_orphan_propose_ballot(&mut self, id: InstanceId, propose_ballot: Ballot) {
+        self.propose_ballot_cache.insert(id, propose_ballot);
     }
 
     #[must_use]
-    pub fn contains_orphan_pbal(&self, id: InstanceId) -> bool {
-        self.pbal_cache.contains_key(&id)
+    pub fn contains_orphan_propose_ballot(&self, id: InstanceId) -> bool {
+        self.propose_ballot_cache.contains_key(&id)
     }
 
     #[must_use]
-    pub fn get_pbal(&self, id: InstanceId) -> Option<Ballot> {
-        if let Some(ins) = self.get_ins(id) {
-            return Some(ins.pbal);
+    pub fn get_propose_ballot(&self, id: InstanceId) -> Option<Ballot> {
+        if let Some(ins) = self.get_instance(id) {
+            return Some(ins.propose_ballot);
         }
-        self.pbal_cache.get(&id).copied()
+        self.propose_ballot_cache.get(&id).copied()
     }
 
-    pub fn remove_ins(&mut self, id: InstanceId) {
+    pub fn remove_instance(&mut self, id: InstanceId) {
         if let Some(row) = self.ins_cache.get_mut(&id.0) {
             if row.remove(&id.1).is_none() {
-                self.pbal_cache.remove(&id);
+                self.propose_ballot_cache.remove(&id);
             }
         }
     }

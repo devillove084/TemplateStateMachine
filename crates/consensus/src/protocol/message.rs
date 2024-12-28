@@ -16,7 +16,7 @@ pub struct PreAccept<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub cmd: Option<C>,
     pub seq: Seq,
     pub deps: Deps,
@@ -28,7 +28,7 @@ pub struct PreAcceptOk {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub struct PreAcceptDiff {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub seq: Seq,
     pub deps: Deps,
 }
@@ -46,7 +46,7 @@ pub struct Accept<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub cmd: Option<C>,
     pub seq: Seq,
     pub deps: Deps,
@@ -58,7 +58,7 @@ pub struct AcceptOk {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub struct Commit<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub cmd: Option<C>,
     pub seq: Seq,
     pub deps: Deps,
@@ -78,7 +78,7 @@ pub struct Prepare {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub known: bool,
 }
 
@@ -87,7 +87,7 @@ pub struct PrepareNack {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,11 +102,11 @@ pub struct PrepareOk<C> {
     pub sender: ReplicaId,
     pub epoch: Epoch,
     pub id: InstanceId,
-    pub pbal: Ballot,
+    pub propose_ballot: Ballot,
     pub cmd: Option<C>,
     pub seq: Seq,
     pub deps: Deps,
-    pub abal: Ballot,
+    pub accepted_ballot: Ballot,
     pub status: Status,
     pub acc: Acc,
 }
