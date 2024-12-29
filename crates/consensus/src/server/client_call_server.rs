@@ -11,7 +11,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-// #[non_exhaustive]
 pub enum Args {
     Get(GetArgs),
     Set(SetArgs),
@@ -20,7 +19,6 @@ pub enum Args {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-// #[non_exhaustive]
 pub enum Output {
     Get(GetOutput),
     Set(SetOutput),
@@ -74,7 +72,7 @@ pub struct GetMetricsOutput {
     pub executed_batched_cmd_count: u64,
 }
 
-pub struct Server {
+pub struct ServerForClient {
     conn: RpcConnection<Args, Output>,
 }
 
@@ -90,7 +88,7 @@ macro_rules! declare_rpc {
     };
 }
 
-impl Server {
+impl ServerForClient {
     pub async fn connect(remote_addr: SocketAddr, config: &RpcClientConfig) -> Result<Self> {
         let conn = RpcConnection::connect(remote_addr, config).await?;
         Ok(Self { conn })

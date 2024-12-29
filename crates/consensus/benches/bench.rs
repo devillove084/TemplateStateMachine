@@ -10,7 +10,7 @@ use asc::Asc;
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use consensus::config::read_config_file;
-use consensus::{RpcClientConfig, Server, clone, utf8};
+use consensus::{RpcClientConfig, ServerForClient, clone, utf8};
 use crossbeam_queue::SegQueue;
 use futures_util::future::join_all;
 use numeric_cast::NumericCast;
@@ -138,7 +138,7 @@ pub async fn case1(config: &Config, args: Case1) -> Result<serde_json::Value> {
         let first = config.servers.iter().next().unwrap();
         let remote_addr = SocketAddr::from((first.1.ip, first.1.client_port));
         let rpc_client_config = crate::default_rpc_client_config();
-        Server::connect(remote_addr, &rpc_client_config).await?
+        ServerForClient::connect(remote_addr, &rpc_client_config).await?
     };
 
     let key = crate::random_bytes(args.key_size);
@@ -196,7 +196,7 @@ pub async fn case2(config: &Config, args: Case2) -> Result<serde_json::Value> {
         let first = config.servers.iter().next().unwrap();
         let remote_addr = SocketAddr::from((first.1.ip, first.1.client_port));
         let rpc_client_config = crate::default_rpc_client_config();
-        consensus::Server::connect(remote_addr, &rpc_client_config).await?
+        consensus::ServerForClient::connect(remote_addr, &rpc_client_config).await?
     };
 
     let key = crate::random_bytes(args.key_size);
@@ -253,7 +253,7 @@ async fn get_cluster_metrics(
     let rpc_client_config = crate::default_rpc_client_config();
     let mut map = BTreeMap::new();
     for (name, remote_addr) in config.iter_remote_addr() {
-        let server = consensus::Server::connect(remote_addr, &rpc_client_config).await?;
+        let server = consensus::ServerForClient::connect(remote_addr, &rpc_client_config).await?;
         let metrics = server.get_metrics(consensus::GetMetricsArgs {}).await?;
         map.insert(name, metrics);
     }
@@ -350,7 +350,8 @@ pub async fn case3(config: &Config, args: Case3) -> Result<serde_json::Value> {
         let rpc_client_config = crate::default_rpc_client_config();
         let mut servers = Vec::new();
         for (_, remote_addr) in config.iter_remote_addr() {
-            let server = consensus::Server::connect(remote_addr, &rpc_client_config).await?;
+            let server =
+                consensus::ServerForClient::connect(remote_addr, &rpc_client_config).await?;
             servers.push(Asc::new(server));
         }
         servers
@@ -553,7 +554,7 @@ pub async fn case5(config: &Config, args: Case5) -> Result<serde_json::Value> {
         let conf = &config.servers[&args.server_name];
         let remote_addr = SocketAddr::from((conf.ip, conf.client_port));
         let rpc_client_config = crate::default_rpc_client_config();
-        Arc::new(consensus::Server::connect(remote_addr, &rpc_client_config).await?)
+        Arc::new(consensus::ServerForClient::connect(remote_addr, &rpc_client_config).await?)
     };
 
     let completed = Arc::new(AtomicU64::new(0));

@@ -72,3 +72,7 @@ impl CommandLike for String {
         debug!("Command executed: {}", self);
     }
 }
+
+pub trait BatchedCommand {}
+
+pub trait MutableCommand {}

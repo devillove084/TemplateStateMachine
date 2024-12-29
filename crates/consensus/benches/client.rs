@@ -55,7 +55,7 @@ pub async fn run(opt: Opt) -> Result<()> {
     let server = {
         let remote_addr = opt.server;
         let rpc_client_config = crate::default_rpc_client_config();
-        consensus::Server::connect(remote_addr, &rpc_client_config).await?
+        consensus::ServerForClient::connect(remote_addr, &rpc_client_config).await?
     };
 
     let t0 = opt.debug_time.then(Instant::now);

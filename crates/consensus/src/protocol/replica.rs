@@ -13,6 +13,9 @@ use super::message::*;
 use super::peers::Peers;
 use super::status::{ExecStatus, Status};
 
+#[cfg(test)]
+use crate::hook::TestHooks;
+
 use crate::clone;
 use crate::lock::with_async_mutex;
 use crate::storage::{DataStore, LogStore, UpdateMode};
@@ -69,7 +72,7 @@ where
     join_tx: SyncMutex<Option<mpsc::Sender<JoinOk>>>,
     sync_tx: DashMap<SyncId, mpsc::Sender<SyncLogOk>>,
 
-    pub graph: Graph<C>,
+    graph: Graph<C>,
     data_store: Arc<D>,
 
     network: N,
@@ -80,17 +83,16 @@ where
     executing_limit: Arc<Semaphore>,
 
     metrics: AsyncMutex<Metrics>,
-
     probe_rtt_countdown: AtomicU64,
+
+    #[cfg(test)]
+    pub test_hooks: AsyncMutex<Option<TestHooks>>,
 }
 
 struct State {
     peers: Peers,
-
     peer_status_bounds: PeerStatusBounds,
-
     lid_head: Head<LocalInstanceId>,
-
     sync_id_head: Head<SyncId>,
 }
 
@@ -259,6 +261,8 @@ where
             executing_limit,
             metrics,
             probe_rtt_countdown,
+            #[cfg(test)]
+            test_hooks: AsyncMutex::new(None),
         }))
     }
 
@@ -269,7 +273,10 @@ where
 
     #[cfg(test)]
     pub fn get_propose_instance_sender(&self, instance_id: InstanceId) -> mpsc::Sender<Message<C>> {
-        self.propose_tx.get(&instance_id).expect("get propose sender").clone()
+        self.propose_tx
+            .get(&instance_id)
+            .expect("get propose sender")
+            .clone()
     }
 
     #[inline]
@@ -482,6 +489,7 @@ where
         Ok(id)
     }
 
+    #[allow(unused)]
     #[tracing::instrument(skip_all, fields(id = ?id, propose_ballot=?propose_ballot))]
     async fn phase_preaccept(
         self: &Arc<Self>,
@@ -492,7 +500,6 @@ where
         acc: Acc,
     ) -> Result<()> {
         debug!("phase_preaccept");
-        println!("-------> phase preaccept");
 
         let (mut rx, mut seq, mut deps, mut acc, targets) = {
             self.log.load(id).await?;
@@ -581,11 +588,23 @@ where
                 }
             }
 
+            #[cfg(not(test))]
             self.spawn_recover_timeout(id, avg_rtt);
 
             (rx, seq, deps.into_mutable(), acc.into_mutable(), targets)
         };
-        println!("------> update rx, seq, deps, acc and target done");
+
+        #[cfg(test)]
+        {
+            let guard = self.test_hooks.lock().await;
+
+            if let Some(ref hooks) = *guard {
+                debug!("test_hooks: waiting on phase_preaccept_barrier");
+                hooks.phase_preaccept_barrier.notified().await;
+                debug!("test_hooks: continue after barrier");
+            }
+        }
+
         {
             let mut received: VecSet<ReplicaId> = VecSet::new();
             let mut all_same = true;
@@ -603,7 +622,6 @@ where
                     .expect("duration should not overflow")
             });
             debug!(?avg_rtt, timeout=?t, "calc preaccept timeout");
-            println!("-----------> Receive start?");
             loop {
                 match recv_timeout(&mut rx, t).await {
                     Ok(Some(msg)) => {
@@ -638,7 +656,11 @@ where
 
                         self.log.load(id).await?;
 
-                        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
+                        if self
+                            .log
+                            .should_ignore_propose_ballot(id, propose_ballot)
+                            .await
+                        {
                             continue;
                         }
 
@@ -707,25 +729,55 @@ where
 
                         with_async_mutex(&self.metrics, |m| {
                             if is_fast_path {
-                                println!("Replica metrics updated: preaccept_fast_path = {:?}", m.preaccept_fast_path);
+                                debug!(
+                                    "Replica metrics updated: preaccept_fast_path = {:?}",
+                                    m.preaccept_fast_path
+                                );
                                 m.preaccept_fast_path = m.preaccept_fast_path.wrapping_add(1);
                             } else {
-                                println!("Replica metrics updated: preaccept_slow_path = {:?}", m.preaccept_slow_path);
+                                debug!(
+                                    "Replica metrics updated: preaccept_slow_path = {:?}",
+                                    m.preaccept_slow_path
+                                );
                                 m.preaccept_slow_path = m.preaccept_slow_path.wrapping_add(1);
                             }
-                        }).await;
+                        })
+                        .await;
+
+                        #[cfg(test)]
+                        {
+                            let guard = self.test_hooks.lock().await;
+                            if let Some(ref hooks) = *guard {
+                                if hooks.skip.load(std::sync::atomic::Ordering::SeqCst) {
+                                    debug!("test_hooks: skipping commit or accept");
+                                    return Ok(());
+                                }
+                            }
+                        }
 
                         if is_fast_path {
                             debug!("fast path");
-                            return Box::pin(
-                                self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
-                            )
+                            return Box::pin(self.phase_commit(
+                                ins_guard,
+                                id,
+                                propose_ballot,
+                                cmd,
+                                seq,
+                                deps,
+                                acc,
+                            ))
                             .await;
                         } else {
                             debug!("slow path");
-                            return Box::pin(
-                                self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
-                            )
+                            return Box::pin(self.phase_accept(
+                                ins_guard,
+                                id,
+                                propose_ballot,
+                                cmd,
+                                seq,
+                                deps,
+                                acc,
+                            ))
                             .await;
                         }
                     }
@@ -768,11 +820,29 @@ where
 
                         with_async_mutex(&self.metrics, |m| {
                             m.preaccept_slow_path = m.preaccept_slow_path.wrapping_add(1);
-                        }).await;
+                        })
+                        .await;
 
-                        return Box::pin(
-                            self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
-                        )
+                        #[cfg(test)]
+                        {
+                            let guard = self.test_hooks.lock().await;
+                            if let Some(ref hooks) = *guard {
+                                if hooks.skip.load(std::sync::atomic::Ordering::SeqCst) {
+                                    debug!("test_hooks: skipping commit or accept");
+                                    return Ok(());
+                                }
+                            }
+                        }
+
+                        return Box::pin(self.phase_accept(
+                            ins_guard,
+                            id,
+                            propose_ballot,
+                            cmd,
+                            seq,
+                            deps,
+                            acc,
+                        ))
                         .await;
                     }
                 }
@@ -780,7 +850,6 @@ where
         }
 
         debug!("phase preaccept failed");
-        println!("-----------> Receive preaccept failed?");
         self.remove_propose_chan(id);
         Ok(())
     }
@@ -800,7 +869,11 @@ where
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
+        if self
+            .log
+            .should_ignore_propose_ballot(id, propose_ballot)
+            .await
+        {
             return Ok(());
         }
         if self
@@ -993,7 +1066,11 @@ where
 
                 self.log.load(id).await?;
 
-                if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
+                if self
+                    .log
+                    .should_ignore_propose_ballot(id, propose_ballot)
+                    .await
+                {
                     continue;
                 }
 
@@ -1028,7 +1105,16 @@ where
                     })
                     .await;
 
-                return Box::pin(self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc)).await;
+                return Box::pin(self.phase_commit(
+                    ins_guard,
+                    id,
+                    propose_ballot,
+                    cmd,
+                    seq,
+                    deps,
+                    acc,
+                ))
+                .await;
             }
         }
 
@@ -1050,7 +1136,11 @@ where
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
+        if self
+            .log
+            .should_ignore_propose_ballot(id, propose_ballot)
+            .await
+        {
             return Ok(());
         }
         if self
@@ -1210,7 +1300,11 @@ where
 
         self.log.load(id).await?;
 
-        if self.log.should_ignore_propose_ballot(id, propose_ballot).await {
+        if self
+            .log
+            .should_ignore_propose_ballot(id, propose_ballot)
+            .await
+        {
             return Ok(());
         }
 
@@ -1406,7 +1500,11 @@ where
                     let ins_guard = self.log.lock_instance(id).await;
                     self.log.load(id).await?;
                     if let PrepareReply::Ok(ref msg) = msg {
-                        if self.log.should_ignore_propose_ballot(id, msg.propose_ballot).await {
+                        if self
+                            .log
+                            .should_ignore_propose_ballot(id, msg.propose_ballot)
+                            .await
+                        {
                             continue;
                         }
                     }
@@ -1424,16 +1522,18 @@ where
                             let _ = received.insert(msg.sender);
 
                             let is_max_accepted_ballot = match max_accepted_ballot {
-                                Some(ref mut max_accepted_ballot) => match Ord::cmp(&msg.accepted_ballot, max_accepted_ballot) {
-                                    Ordering::Less => false,
-                                    Ordering::Equal => true,
-                                    Ordering::Greater => {
-                                        *max_accepted_ballot = msg.accepted_ballot;
-                                        cmd = None;
-                                        tuples.clear();
-                                        true
+                                Some(ref mut max_accepted_ballot) => {
+                                    match Ord::cmp(&msg.accepted_ballot, max_accepted_ballot) {
+                                        Ordering::Less => false,
+                                        Ordering::Equal => true,
+                                        Ordering::Greater => {
+                                            *max_accepted_ballot = msg.accepted_ballot;
+                                            cmd = None;
+                                            tuples.clear();
+                                            true
+                                        }
                                     }
-                                },
+                                }
                                 None => {
                                     max_accepted_ballot = Some(msg.accepted_ballot);
                                     true
@@ -1476,7 +1576,8 @@ where
                     debug!(?propose_ballot, ?tuples, "recover succeeded");
                     with_async_mutex(&self.metrics, |m| {
                         m.recover_success_count = m.recover_success_count.wrapping_add(1);
-                    }).await;
+                    })
+                    .await;
 
                     let _ = self.recovering.remove(&id);
 
@@ -1499,9 +1600,15 @@ where
                             continue;
                         }
                         let deps = mem::take(deps);
-                        return Box::pin(
-                            self.phase_commit(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
-                        )
+                        return Box::pin(self.phase_commit(
+                            ins_guard,
+                            id,
+                            propose_ballot,
+                            cmd,
+                            seq,
+                            deps,
+                            acc,
+                        ))
                         .await;
                     }
 
@@ -1510,9 +1617,15 @@ where
                             continue;
                         }
                         let deps = mem::take(deps);
-                        return Box::pin(
-                            self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc),
-                        )
+                        return Box::pin(self.phase_accept(
+                            ins_guard,
+                            id,
+                            propose_ballot,
+                            cmd,
+                            seq,
+                            deps,
+                            acc,
+                        ))
                         .await;
                     }
 
@@ -1542,7 +1655,15 @@ where
                                 let seq = attr.0;
                                 let deps = mem::take(attr.1);
                                 return Box::pin({
-                                    self.phase_accept(ins_guard, id, propose_ballot, cmd, seq, deps, acc)
+                                    self.phase_accept(
+                                        ins_guard,
+                                        id,
+                                        propose_ballot,
+                                        cmd,
+                                        seq,
+                                        deps,
+                                        acc,
+                                    )
                                 })
                                 .await;
                             }
@@ -1550,7 +1671,14 @@ where
                     }
 
                     if tuples.is_empty().not() {
-                        return Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, cmd, acc)).await;
+                        return Box::pin(self.phase_preaccept(
+                            ins_guard,
+                            id,
+                            propose_ballot,
+                            cmd,
+                            acc,
+                        ))
+                        .await;
                     }
 
                     let (cmd, acc) = self
@@ -1564,10 +1692,12 @@ where
                     if cmd.is_some() {
                         with_async_mutex(&self.metrics, |m| {
                             m.recover_nop_count = m.recover_nop_count.wrapping_add(1);
-                        }).await;
+                        })
+                        .await;
                     }
 
-                    return Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, cmd, acc)).await;
+                    return Box::pin(self.phase_preaccept(ins_guard, id, propose_ballot, cmd, acc))
+                        .await;
                 }
             }
 
@@ -1930,7 +2060,10 @@ where
 
                 let ins_guard = self.log.lock_instance(id).await;
                 self.log.load(id).await?;
-                let instance = self.log.with_cached_instance(id, |instance| instance.cloned()).await;
+                let instance = self
+                    .log
+                    .with_cached_instance(id, |instance| instance.cloned())
+                    .await;
 
                 drop(ins_guard);
 
@@ -2002,7 +2135,9 @@ where
                     let instance = self
                         .log
                         .with_cached_instance(id, |instance| match instance {
-                            Some(instance) if instance.status >= Status::Committed => Some(instance.clone()),
+                            Some(instance) if instance.status >= Status::Committed => {
+                                Some(instance.clone())
+                            }
                             _ => None,
                         })
                         .await;
@@ -2071,11 +2206,17 @@ where
                 .log
                 .with_cached_instance(id, |saved_ins| match saved_ins {
                     None => match saved_propose_ballot {
-                        Some(saved_propose_ballot) if saved_propose_ballot > instance.accepted_ballot => None,
+                        Some(saved_propose_ballot)
+                            if saved_propose_ballot > instance.accepted_ballot =>
+                        {
+                            None
+                        }
                         _ => Some((UpdateMode::Full, instance.status >= Status::Committed)),
                     },
                     Some(saved_ins) => {
-                        if saved_ins.status < Status::Committed && instance.status >= Status::Committed {
+                        if saved_ins.status < Status::Committed
+                            && instance.status >= Status::Committed
+                        {
                             max_assign(&mut instance.propose_ballot, saved_ins.propose_ballot);
                             max_assign(&mut instance.accepted_ballot, saved_ins.accepted_ballot);
                             instance.status = Status::Committed;

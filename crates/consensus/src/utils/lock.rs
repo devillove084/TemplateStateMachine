@@ -20,9 +20,7 @@ pub fn with_mutex<T, R>(lock: &Mutex<T>, f: impl FnOnce(&mut T) -> R) -> R {
 }
 
 #[inline]
-pub async fn with_async_mutex<T, R>(mutex: &AsyncMutex<T>, f: impl FnOnce(&mut T) -> R) -> R
-{
+pub async fn with_async_mutex<T, R>(mutex: &AsyncMutex<T>, f: impl FnOnce(&mut T) -> R) -> R {
     let mut guard = mutex.lock().await;
     f(&mut *guard)
 }
-

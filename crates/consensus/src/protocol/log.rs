@@ -185,8 +185,12 @@ where
                         .with(|cache| cache.contains_orphan_propose_ballot(id).not())
                         .await;
                     if needs_load_propose_ballot {
-                        if let Some(propose_ballot) = self.log_store.load_propose_ballot(id).await? {
-                            self.with(|cache| cache.insert_orphan_propose_ballot(id, propose_ballot)).await;
+                        if let Some(propose_ballot) = self.log_store.load_propose_ballot(id).await?
+                        {
+                            self.with(|cache| {
+                                cache.insert_orphan_propose_ballot(id, propose_ballot)
+                            })
+                            .await;
                         }
                     }
                 }
@@ -196,7 +200,9 @@ where
     }
 
     pub async fn save_propose_ballot(&self, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
-        self.log_store.save_propose_ballot(id, propose_ballot).await?;
+        self.log_store
+            .save_propose_ballot(id, propose_ballot)
+            .await?;
 
         self.with(|cache| match cache.get_mut_instance(id) {
             Some(ins) => ins.propose_ballot = propose_ballot,
@@ -235,7 +241,11 @@ where
         self.with(|cache| f(cache.get_instance(id))).await
     }
 
-    pub async fn should_ignore_propose_ballot(&self, id: InstanceId, propose_ballot: Ballot) -> bool {
+    pub async fn should_ignore_propose_ballot(
+        &self,
+        id: InstanceId,
+        propose_ballot: Ballot,
+    ) -> bool {
         if let Some(saved_propose_ballot) = self.get_cached_propose_ballot(id).await {
             if saved_propose_ballot != propose_ballot {
                 return true;

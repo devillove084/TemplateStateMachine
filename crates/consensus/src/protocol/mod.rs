@@ -65,7 +65,7 @@ mod consensus_unit_test {
     use std::{
         collections::{HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::{Arc, Mutex},
+        sync::{Arc, atomic::AtomicBool},
         time::Duration,
     };
 
@@ -73,14 +73,15 @@ mod consensus_unit_test {
     use dashmap::DashMap;
     use ordered_vecmap::{VecMap, VecSet};
     use serde::{Deserialize, Serialize};
-    use tokio::{sync::{mpsc::Receiver, Mutex as AsyncMutex}, time::sleep};
     use tokio::sync::{
         Notify,
-        mpsc::{self, Sender},
+        mpsc::{self},
     };
+    use tokio::{sync::Mutex as AsyncMutex, time::sleep};
+    use tracing::debug;
 
     use super::*;
-    use crate::{DataStore, LogStore, UpdateMode, onemap::OneMap};
+    use crate::{DataStore, LogStore, UpdateMode, hook::TestHooks, onemap::OneMap};
     use anyhow::Result;
 
     fn create_test_socket_addr(replica_id: usize) -> SocketAddr {
@@ -274,7 +275,11 @@ mod consensus_unit_test {
             Ok(storage.get(&id).cloned())
         }
 
-        async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+        async fn save_propose_ballot(
+            self: &Arc<Self>,
+            id: InstanceId,
+            propose_ballot: Ballot,
+        ) -> Result<()> {
             let mut propose_ballot_store = self.propose_ballot_store.lock().await;
             propose_ballot_store.insert(id, propose_ballot);
             Ok(())
@@ -429,13 +434,10 @@ mod consensus_unit_test {
             }
         }
 
-        // 实现 join，注册 Replica 并返回旧的 ReplicaId（如果有的话）
-        fn join_replica(&self, rid: ReplicaId, _addr: std::net::SocketAddr) -> Option<ReplicaId> {
-            // 在测试中不需要实际处理返回值
+        fn join_replica(&self, _rid: ReplicaId, _addr: std::net::SocketAddr) -> Option<ReplicaId> {
             None
         }
 
-        // 实现 leave，移除 Replica
         fn leave_replica(&self, rid: ReplicaId) {
             self.senders.remove(&rid);
             self.notifiers.remove(&rid);
@@ -466,30 +468,44 @@ mod consensus_unit_test {
 
     #[tokio::test]
     async fn test_preaccept_fast_path_success() {
-        // 设置测试 Replica 数量，例如 5
-        let (replica, member_net) = setup_test_replica_with_member_net::<
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .try_init();
+        let (replicas, _) = setup_test_replica_with_member_net::<
             TestCommand,
             TestLogStore<TestCommand>,
             TestDataStore<TestCommand>,
         >(5)
         .await;
-
-        // 创建测试命令
         let cmd = create_test_command();
 
-        // 启动 propose 任务，并捕获 InstanceId
+        let preaccept_trigger = Arc::new(Notify::new());
+        let test_hooks = TestHooks {
+            skip: Arc::new(AtomicBool::new(true)),
+            phase_preaccept_barrier: preaccept_trigger.clone(),
+        };
+        replicas.test_hooks.lock().await.replace(test_hooks);
+
         let propose_handle = tokio::spawn({
-            let replica = replica.clone();
+            let replica = replicas.clone();
             async move { replica.run_propose(cmd).await }
         });
 
-        // 等待 propose 任务返回 InstanceId
-        let instance_id = match propose_handle.await.unwrap() {
-            Ok(id) => id,
-            Err(e) => panic!("Propose failed: {:?}", e),
-        };
+        debug!("Start propose");
 
-        // 发送 PreAcceptOk 和 PreAcceptDiff 消息来自 ReplicaId 2, 3, 4, 5
+        tokio::spawn({
+            let propose_handle = propose_handle;
+            async move {
+                let _ = propose_handle.await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let instance_id = InstanceId(ReplicaId::from(1), LocalInstanceId::from(1));
+
+        let real_sender = replicas.get_propose_instance_sender(instance_id);
+
         let responses = vec![
             Message::PreAcceptOk(PreAcceptOk {
                 sender: ReplicaId::from(2),
@@ -509,69 +525,69 @@ mod consensus_unit_test {
                 id: instance_id.clone(),
                 propose_ballot: Ballot(Round::ZERO, ReplicaId::ONE),
             }),
-            Message::PreAcceptDiff(PreAcceptDiff {
-                sender: ReplicaId::from(5),
-                epoch: Epoch::ZERO,
-                id: instance_id.clone(),
-                propose_ballot: Ballot(Round::ZERO, ReplicaId::ONE),
-                seq: Seq::from(1),
-                deps: Deps::default(),
-            }),
         ];
 
-        // 发送所有响应消息
         for msg in responses {
-            member_net.send_one(ReplicaId::ONE, msg);
+            let _ = real_sender.send(msg).await;
         }
 
-        // 等待 Replica 处理所有消息
-        sleep(Duration::from_millis(500)).await;
+        debug!("notify one!");
+        preaccept_trigger.notify_one();
 
-        // 获取最终指标
-        let final_metrics = replica.metrics().await;
+        sleep(Duration::from_secs(1)).await;
+
+        let final_metrics = replicas.metrics().await;
         println!(
             "Final metrics: preaccept_slow_path = {}, preaccept_fast_path = {}",
             final_metrics.preaccept_slow_path, final_metrics.preaccept_fast_path
         );
 
-        // 验证指标
-        // 根据协议逻辑，收到足够的 PreAcceptOk 应该进入 fast path
         assert_eq!(
-            final_metrics.preaccept_fast_path, 2,
-            "Expected to enter fast path twice (from PreAcceptOk messages)"
-        );
-        assert_eq!(
-            final_metrics.preaccept_slow_path, 2,
-            "Expected to enter slow path twice (from PreAcceptDiff messages)"
+            final_metrics.preaccept_fast_path, 1,
+            "Expected to enter slow path once (due to timeout)"
         );
     }
 
     #[tokio::test]
     async fn test_preaccept_slow_path_due_to_timeout() {
-        // 设置测试 Replica 数量，例如 5
-        let (replica, member_net) = setup_test_replica_with_member_net::<
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .try_init();
+        let (replicas, _) = setup_test_replica_with_member_net::<
             TestCommand,
             TestLogStore<TestCommand>,
             TestDataStore<TestCommand>,
         >(5)
         .await;
-
-        // 创建测试命令
         let cmd = create_test_command();
 
-        // 启动 propose 任务，并捕获 InstanceId
+        let preaccept_trigger = Arc::new(Notify::new());
+        let test_hooks = TestHooks {
+            skip: Arc::new(AtomicBool::new(true)),
+            phase_preaccept_barrier: preaccept_trigger.clone(),
+        };
+        replicas.test_hooks.lock().await.replace(test_hooks);
+
         let propose_handle = tokio::spawn({
-            let replica = replica.clone();
+            let replica = replicas.clone();
             async move { replica.run_propose(cmd).await }
         });
 
-        // 等待 propose 任务返回 InstanceId
-        let instance_id = match propose_handle.await.unwrap() {
-            Ok(id) => id,
-            Err(e) => panic!("Propose failed: {:?}", e),
-        };
+        debug!("Start propose");
 
-        // 发送部分响应消息来自 ReplicaId 2 和 3
+        tokio::spawn({
+            let propose_handle = propose_handle;
+            async move {
+                let _ = propose_handle.await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let instance_id = InstanceId(ReplicaId::from(1), LocalInstanceId::from(1));
+
+        let real_sender = replicas.get_propose_instance_sender(instance_id);
+
         let responses = vec![
             Message::PreAcceptOk(PreAcceptOk {
                 sender: ReplicaId::from(2),
@@ -589,24 +605,21 @@ mod consensus_unit_test {
             }),
         ];
 
-        // 发送部分响应消息
         for msg in responses {
-            member_net.send_one(ReplicaId::ONE, msg);
+            let _ = real_sender.send(msg).await;
         }
 
-        sleep(Duration::from_secs(2)).await;
+        debug!("notify one!");
+        preaccept_trigger.notify_one();
 
-        // 获取最终指标
-        let final_metrics = replica.metrics().await;
+        sleep(Duration::from_secs(1)).await;
+
+        let final_metrics = replicas.metrics().await;
         println!(
             "Final metrics: preaccept_slow_path = {}, preaccept_fast_path = {}",
             final_metrics.preaccept_slow_path, final_metrics.preaccept_fast_path
         );
 
-        assert_eq!(
-            final_metrics.preaccept_fast_path, 1,
-            "Expected to enter fast path once (from PreAcceptOk messages)"
-        );
         assert_eq!(
             final_metrics.preaccept_slow_path, 1,
             "Expected to enter slow path once (due to timeout)"

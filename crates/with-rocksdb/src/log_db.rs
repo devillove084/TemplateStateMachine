@@ -151,7 +151,11 @@ impl LogDb {
         Ok(Some(ins))
     }
 
-    pub async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+    pub async fn save_propose_ballot(
+        self: &Arc<Self>,
+        id: InstanceId,
+        propose_ballot: Ballot,
+    ) -> Result<()> {
         let log_key = InstanceFieldKey::new(id, InstanceFieldKey::FIELD_propose_ballot);
         put_small_value(&mut &self.db, bytes_of(&log_key), &propose_ballot)
     }
@@ -344,7 +348,11 @@ impl LogStore<BatchedCommand> for LogDb {
         LogDb::load(&this, id).await
     }
 
-    async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+    async fn save_propose_ballot(
+        self: &Arc<Self>,
+        id: InstanceId,
+        propose_ballot: Ballot,
+    ) -> Result<()> {
         let this = Arc::clone(self);
         LogDb::save_propose_ballot(&this, id, propose_ballot).await
     }
@@ -467,7 +475,10 @@ mod tests {
 
         let loaded_instance = rocksdb_log_store.load(instance_id).await?;
         assert!(loaded_instance.is_some());
-        assert_eq!(loaded_instance.unwrap().propose_ballot, instance.propose_ballot);
+        assert_eq!(
+            loaded_instance.unwrap().propose_ballot,
+            instance.propose_ballot
+        );
 
         Ok(())
     }

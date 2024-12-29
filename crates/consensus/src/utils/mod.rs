@@ -29,6 +29,7 @@ pub mod config;
 pub mod display;
 pub mod flag_group;
 pub mod func;
+pub mod hook;
 pub mod iter;
 pub mod lock;
 pub mod onemap;

@@ -149,7 +149,8 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
         self.write_file(&status_path, &serialize(&ins.status)?)
             .await?;
         self.write_file(&seq_path, &serialize(&ins.seq)?).await?;
-        self.write_file(&propose_ballot_path, &serialize(&ins.propose_ballot)?).await?;
+        self.write_file(&propose_ballot_path, &serialize(&ins.propose_ballot)?)
+            .await?;
 
         if needs_save_cmd {
             let cmd_path = self.path_builder.instance_field_path(id, 4); // FIELD_CMD
@@ -203,7 +204,11 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
         }))
     }
 
-    async fn save_propose_ballot(self: &Arc<Self>, id: InstanceId, propose_ballot: Ballot) -> Result<()> {
+    async fn save_propose_ballot(
+        self: &Arc<Self>,
+        id: InstanceId,
+        propose_ballot: Ballot,
+    ) -> Result<()> {
         let path = self.path_builder.instance_field_path(id, 3); // FIELD_propose_ballot
         self.write_file(&path, &serialize(&propose_ballot)?).await
     }
@@ -380,7 +385,10 @@ mod log_store_test {
         // 测试 load
         let loaded_instance = opendal_log_store.load_action(instance_id).await?;
         assert!(loaded_instance.is_some());
-        assert_eq!(loaded_instance.unwrap().accepted_ballot, instance.accepted_ballot);
+        assert_eq!(
+            loaded_instance.unwrap().accepted_ballot,
+            instance.accepted_ballot
+        );
 
         // // 测试 save_propose_ballot
         // opendal_log_store.save_propose_ballot(instance_id, Ballot(2)).await?;
