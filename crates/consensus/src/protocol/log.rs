@@ -23,12 +23,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::OwnedMutexGuard as OwnedAsyncMutexGuard;
 use tracing::debug;
 
-pub struct Log<C, L>
+pub struct Log<C>
 where
     C: CommandLike,
-    L: LogStore<C>,
 {
-    log_store: Arc<L>,
+    log_store: Arc<dyn LogStore<C>>,
     status_bounds: Asc<SyncMutex<StatusBounds>>,
     cache: AsyncMutex<LogCache<C>>,
     ins_locks: DashMap<InstanceId, Arc<AsyncMutex<()>>>,
@@ -45,14 +44,13 @@ impl Drop for InsGuard {
     }
 }
 
-impl<C, L> Log<C, L>
+impl<C> Log<C>
 where
     C: CommandLike,
-    L: LogStore<C>,
 {
     #[must_use]
     pub fn new(
-        log_store: Arc<L>,
+        log_store: Arc<dyn LogStore<C>>,
         attr_bounds: AttrBounds,
         status_bounds: Asc<SyncMutex<StatusBounds>>,
     ) -> Self {

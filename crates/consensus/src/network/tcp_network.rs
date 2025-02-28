@@ -1,8 +1,8 @@
-use super::NetworkConfig;
-
 use crate::AddrMap;
-use crate::MembershipChange;
+use crate::CommandLike;
+use crate::MemberNetwork;
 use crate::Message;
+use crate::NetworkConfig;
 use crate::ReplicaId;
 
 use crate::utils::chan;
@@ -73,24 +73,24 @@ struct State {
     addr_map: AddrMap,
 }
 
-pub struct TcpNetwork<C> {
+pub struct TcpNetwork<C: CommandLike> {
     state: SyncRwLock<State>,
     config: NetworkConfig,
 
-    metrics: SyncMutex<Metrics>,
+    metrics: SyncMutex<NetworkMetrics>,
 
     _marker: PhantomData<fn(C) -> C>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Metrics {
+pub struct NetworkMetrics {
     pub msg_total_size: u64,
     pub msg_count: u64,
 }
 
-impl<C> MembershipChange<C> for TcpNetwork<C>
+impl<C> MemberNetwork<C> for TcpNetwork<C>
 where
-    C: Serialize + 'static,
+    C: CommandLike + Serialize + 'static,
 {
     fn broadcast(&self, targets: VecSet<ReplicaId>, msg: Message<C>) {
         if targets.is_empty() {
@@ -140,32 +140,32 @@ where
         }
     }
 
-    fn join(&self, rid: ReplicaId, addr: SocketAddr) -> Option<ReplicaId> {
+    fn join(&self, replica_id: ReplicaId, addr: SocketAddr) -> Option<ReplicaId> {
         with_write_lock(&self.state, |s| {
-            let prev_rid = s.addr_map.update(rid, addr);
+            let prev_replica_id = s.addr_map.update(replica_id, addr);
 
-            if let Some(prev) = prev_rid {
+            if let Some(prev) = prev_replica_id {
                 let _ = s.conns.remove(&prev);
             }
 
             let _ = s
                 .conns
-                .insert(rid, Self::spawn_connector(addr, &self.config));
+                .insert(replica_id, Self::spawn_connector(addr, &self.config));
 
-            prev_rid
+            prev_replica_id
         })
     }
 
-    fn leave(&self, rid: ReplicaId) {
+    fn leave(&self, replica_id: ReplicaId) {
         let conn = with_write_lock(&self.state, |s| {
-            s.addr_map.remove(rid);
-            s.conns.remove(&rid)
+            s.addr_map.remove(replica_id);
+            s.conns.remove(&replica_id)
         });
         drop(conn);
     }
 }
 
-impl<C> TcpNetwork<C> {
+impl<C: CommandLike> TcpNetwork<C> {
     #[must_use]
     pub fn new(config: &NetworkConfig) -> Self {
         Self {
@@ -174,7 +174,7 @@ impl<C> TcpNetwork<C> {
                 addr_map: AddrMap::new(),
             }),
             config: config.clone(),
-            metrics: SyncMutex::new(Metrics {
+            metrics: SyncMutex::new(NetworkMetrics {
                 msg_total_size: 0,
                 msg_count: 0,
             }),
@@ -306,7 +306,7 @@ impl<C> TcpNetwork<C> {
         }
     }
 
-    pub fn metrics(&self) -> Metrics {
+    pub fn metrics(&self) -> NetworkMetrics {
         with_mutex(&self.metrics, |metrics| metrics.clone())
     }
 }

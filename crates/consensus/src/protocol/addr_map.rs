@@ -21,19 +21,19 @@ impl AddrMap {
         }
     }
 
-    pub fn update(&mut self, rid: ReplicaId, addr: SocketAddr) -> Option<ReplicaId> {
-        if let Some(prev_addr) = self.map.insert(rid, addr) {
+    pub fn update(&mut self, replica_id: ReplicaId, addr: SocketAddr) -> Option<ReplicaId> {
+        if let Some(prev_addr) = self.map.insert(replica_id, addr) {
             self.rev.remove(&prev_addr);
         }
-        let prev_rid = self.rev.insert(addr, rid);
-        if let Some(prev_rid) = prev_rid {
-            let _ = self.map.remove(&prev_rid);
+        let prev_replica_id = self.rev.insert(addr, replica_id);
+        if let Some(prev_replica_id) = prev_replica_id {
+            let _ = self.map.remove(&prev_replica_id);
         }
-        prev_rid
+        prev_replica_id
     }
 
-    pub fn remove(&mut self, rid: ReplicaId) {
-        if let Some(addr) = self.map.remove(&rid) {
+    pub fn remove(&mut self, replica_id: ReplicaId) {
+        if let Some(addr) = self.map.remove(&replica_id) {
             self.rev.remove(&addr);
         }
     }

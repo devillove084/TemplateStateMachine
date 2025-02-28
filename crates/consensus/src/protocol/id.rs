@@ -204,16 +204,16 @@ impl fmt::Debug for Ballot {
 
 /// `++i`
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Head<T>(T);
+pub struct NextGenerator<T>(T);
 
-impl<T> Head<T> {
+impl<T> NextGenerator<T> {
     #[inline]
     pub const fn new(val: T) -> Self {
         Self(val)
     }
 }
 
-impl Head<ReplicaId> {
+impl NextGenerator<ReplicaId> {
     #[inline]
     pub fn gen_next(&mut self) -> ReplicaId {
         self.0 = self.0.add_one();
@@ -221,7 +221,7 @@ impl Head<ReplicaId> {
     }
 }
 
-impl Head<Epoch> {
+impl NextGenerator<Epoch> {
     #[inline]
     pub fn gen_next(&mut self) -> Epoch {
         self.0 = self.0.add_one();
@@ -229,7 +229,7 @@ impl Head<Epoch> {
     }
 }
 
-impl Head<LocalInstanceId> {
+impl NextGenerator<LocalInstanceId> {
     #[inline]
     pub fn gen_next(&mut self) -> LocalInstanceId {
         self.0 = self.0.add_one();
@@ -237,7 +237,7 @@ impl Head<LocalInstanceId> {
     }
 }
 
-impl Head<SyncId> {
+impl NextGenerator<SyncId> {
     #[inline]
     pub fn gen_next(&mut self) -> SyncId {
         self.0 = self.0.add_one();
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn head() {
-        let mut lid_head = Head(LocalInstanceId::ZERO);
+        let mut lid_head = NextGenerator(LocalInstanceId::ZERO);
         assert_eq!(lid_head.gen_next(), LocalInstanceId::ONE);
         assert_eq!(lid_head.gen_next(), LocalInstanceId::from(2));
     }

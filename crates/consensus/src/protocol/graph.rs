@@ -106,15 +106,15 @@ impl<C> Graph<C> {
         self.sync_watermark(id.0);
     }
 
-    pub fn sync_watermark(&self, rid: ReplicaId) {
+    pub fn sync_watermark(&self, replica_id: ReplicaId) {
         let committed_up_to = with_mutex(&self.status_bounds, |status_bounds| {
-            let m = status_bounds.as_mut().get_mut(&rid)?;
+            let m = status_bounds.as_mut().get_mut(&replica_id)?;
             m.committed.update_bound();
             Some(m.committed.bound())
         });
 
         if let Some(lv) = committed_up_to {
-            let wm = self.watermark(rid);
+            let wm = self.watermark(replica_id);
             wm.bump_level(lv)
         }
     }
@@ -162,9 +162,9 @@ impl<C> Graph<C> {
     fn is_executed(&self, id: InstanceId) -> bool {
         let guard = self.status_bounds.lock();
         let status_bounds = &*guard;
-        let InstanceId(rid, lid) = id;
-        if let Some(m) = status_bounds.as_ref().get(&rid) {
-            if m.executed.is_set(lid.raw_value()) {
+        let InstanceId(replica_id, local_instance_id) = id;
+        if let Some(m) = status_bounds.as_ref().get(&replica_id) {
+            if m.executed.is_set(local_instance_id.raw_value()) {
                 return true;
             }
         }
@@ -178,15 +178,15 @@ impl<C> Graph<C> {
     }
 
     #[must_use]
-    pub fn watermark(&self, rid: ReplicaId) -> Asc<WaterMark> {
+    pub fn watermark(&self, replica_id: ReplicaId) -> Asc<WaterMark> {
         let bound = with_mutex(&self.status_bounds, |status_bounds| {
             status_bounds
                 .as_ref()
-                .get(&rid)
+                .get(&replica_id)
                 .map(|m| m.committed.bound())
         });
         let generate = || Asc::new(WaterMark::new(bound.unwrap_or(0)));
-        self.watermarks.entry(rid).or_insert_with(generate).clone()
+        self.watermarks.entry(replica_id).or_insert_with(generate).clone()
     }
 }
 

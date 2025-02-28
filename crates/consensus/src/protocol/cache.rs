@@ -48,12 +48,12 @@ where
     pub fn new(attr_bounds: AttrBounds) -> Self {
         let max_key_map = HashMap::new();
 
-        let max_lid_map = copied_map_collect(attr_bounds.max_lids.iter(), |(rid, lid)| {
+        let max_lid_map = copied_map_collect(attr_bounds.max_lids.iter(), |(replica_id, local_instance_id)| {
             let max_lid = MaxLid {
-                checkpoint: lid,
-                any: lid,
+                checkpoint: local_instance_id,
+                any: local_instance_id,
             };
-            (rid, max_lid)
+            (replica_id, max_lid)
         });
 
         let max_seq = MaxSeq {
@@ -76,10 +76,10 @@ where
     pub fn calc_attributes(&self, id: InstanceId, keys: &C::Keys) -> (Seq, MutableDeps) {
         let mut deps = MutableDeps::with_capacity(self.max_lid_map.len());
         let mut seq = Seq::ZERO;
-        let InstanceId(rid, lid) = id;
+        let InstanceId(replica_id, local_instance_id) = id;
 
         if keys.is_unbounded() {
-            let others = self.max_lid_map.iter().filter(|(r, _)| *r != rid);
+            let others = self.max_lid_map.iter().filter(|(r, _)| *r != replica_id);
             for &(r, ref m) in others {
                 deps.insert(InstanceId(r, m.any));
             }
@@ -87,14 +87,14 @@ where
         } else {
             keys.for_each(|k| {
                 if let Some(m) = self.max_key_map.get(k) {
-                    let others = m.lids.iter().filter(|(r, _)| *r != rid);
+                    let others = m.lids.iter().filter(|(r, _)| *r != replica_id);
                     for &(r, l) in others {
                         deps.insert(InstanceId(r, l));
                     }
                     max_assign(&mut seq, m.seq);
                 }
             });
-            let others = self.max_lid_map.iter().filter(|(r, _)| *r != rid);
+            let others = self.max_lid_map.iter().filter(|(r, _)| *r != replica_id);
             for &(r, ref m) in others {
                 if m.checkpoint > LocalInstanceId::ZERO {
                     deps.insert(InstanceId(r, m.checkpoint));
@@ -102,26 +102,26 @@ where
             }
             max_assign(&mut seq, self.max_seq.checkpoint);
         }
-        if lid > LocalInstanceId::ONE {
-            deps.insert(InstanceId(rid, lid.sub_one()));
+        if local_instance_id > LocalInstanceId::ONE {
+            deps.insert(InstanceId(replica_id, local_instance_id.sub_one()));
         }
         seq = seq.add_one();
         (seq, deps)
     }
 
     pub fn update_attrs(&mut self, id: InstanceId, keys: C::Keys, seq: Seq) {
-        let InstanceId(rid, lid) = id;
+        let InstanceId(replica_id, local_instance_id) = id;
 
         if keys.is_unbounded() {
             self.max_lid_map
-                .entry(rid)
+                .entry(replica_id)
                 .and_modify(|m| {
-                    max_assign(&mut m.checkpoint, lid);
-                    max_assign(&mut m.any, lid);
+                    max_assign(&mut m.checkpoint, local_instance_id);
+                    max_assign(&mut m.any, local_instance_id);
                 })
                 .or_insert_with(|| MaxLid {
-                    checkpoint: lid,
-                    any: lid,
+                    checkpoint: local_instance_id,
+                    any: local_instance_id,
                 });
 
             max_assign(&mut self.max_seq.checkpoint, seq);
@@ -132,22 +132,22 @@ where
                     let m = e.get_mut();
                     max_assign(&mut m.seq, seq);
                     m.lids
-                        .entry(rid)
-                        .and_modify(|l| max_assign(l, lid))
-                        .or_insert(lid);
+                        .entry(replica_id)
+                        .and_modify(|l| max_assign(l, local_instance_id))
+                        .or_insert(local_instance_id);
                 }
                 hash_map::Entry::Vacant(e) => {
-                    let lids = VecMap::from_single(rid, lid);
+                    let lids = VecMap::from_single(replica_id, local_instance_id);
                     e.insert(MaxKey { seq, lids });
                 }
             });
 
             self.max_lid_map
-                .entry(rid)
-                .and_modify(|m| max_assign(&mut m.any, lid))
+                .entry(replica_id)
+                .and_modify(|m| max_assign(&mut m.any, local_instance_id))
                 .or_insert_with(|| MaxLid {
                     checkpoint: LocalInstanceId::ZERO,
-                    any: lid,
+                    any: local_instance_id,
                 });
 
             max_assign(&mut self.max_seq.any, seq);
@@ -227,7 +227,7 @@ where
     pub fn calc_attr_bounds(&self) -> AttrBounds {
         AttrBounds {
             max_seq: self.max_seq.any,
-            max_lids: map_collect(&self.max_lid_map, |&(rid, ref m)| (rid, m.any)),
+            max_lids: map_collect(&self.max_lid_map, |&(replica_id, ref m)| (replica_id, m.any)),
         }
     }
 }

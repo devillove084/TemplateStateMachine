@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/consensus",
-    "crates/with-rocksdb",
-    "crates/with-templatedb"
+    # "crates/with-rocksdb",
+    # "crates/with-templatedb"
 ]
 resolver = "2"
 

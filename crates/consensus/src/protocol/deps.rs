@@ -20,11 +20,11 @@ impl MutableDeps {
     }
 
     pub fn insert(&mut self, id: InstanceId) {
-        let InstanceId(rid, lid) = id;
+        let InstanceId(replica_id, local_instance_id) = id;
         self.0
-            .entry(rid)
-            .and_modify(|prev| max_assign(prev, lid))
-            .or_insert(lid);
+            .entry(replica_id)
+            .and_modify(|prev| max_assign(prev, local_instance_id))
+            .or_insert(local_instance_id);
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -89,7 +89,7 @@ impl Deps {
             .0
             .iter()
             .copied()
-            .map(|(rid, lid)| InstanceId(rid, lid))
+            .map(|(replica_id, local_instance_id)| InstanceId(replica_id, local_instance_id))
     }
 }
 

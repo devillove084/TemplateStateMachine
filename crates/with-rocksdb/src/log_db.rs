@@ -247,9 +247,9 @@ impl LogDb {
             let mut merge =
                 |map: &VecMap<ReplicaId, LocalInstanceId>,
                  project: fn(&mut StatusMap) -> &mut OneMap| {
-                    for &(rid, lid) in map {
-                        let m = maps.entry(rid).or_insert_with(create_default);
-                        ((project)(m)).set_bound(lid.raw_value());
+                    for &(replica_id, local_instance_id) in map {
+                        let m = maps.entry(replica_id).or_insert_with(create_default);
+                        ((project)(m)).set_bound(local_instance_id.raw_value());
                     }
                 };
 
@@ -263,14 +263,14 @@ impl LogDb {
         {
             let field_status = InstanceFieldKey::FIELD_STATUS;
 
-            let mut rid = ReplicaId::ONE;
-            let mut lid = match saved_status_bounds.executed_up_to.get(&rid) {
+            let mut replica_id = ReplicaId::ONE;
+            let mut local_instance_id = match saved_status_bounds.executed_up_to.get(&replica_id) {
                 Some(jump_to) => jump_to.add_one(),
                 None => LocalInstanceId::ONE,
             };
 
             loop {
-                let log_key = InstanceFieldKey::new(InstanceId(rid, lid), field_status);
+                let log_key = InstanceFieldKey::new(InstanceId(replica_id, local_instance_id), field_status);
 
                 iter.seek(bytes_of(&log_key));
                 if iter.valid().not() {
@@ -283,20 +283,20 @@ impl LogDb {
                 };
 
                 let id = log_key.id();
-                let is_rid_changed = rid != id.0;
-                InstanceId(rid, lid) = id;
+                let is_replica_id_changed = replica_id != id.0;
+                InstanceId(replica_id, local_instance_id) = id;
 
-                if is_rid_changed {
+                if is_replica_id_changed {
                     if let Some(&jump_to) = saved_status_bounds.executed_up_to.get(&id.0) {
-                        if lid < jump_to {
-                            lid = jump_to.add_one();
+                        if local_instance_id < jump_to {
+                            local_instance_id = jump_to.add_one();
                             continue;
                         }
                     }
                 }
 
                 if log_key.field() != field_status {
-                    lid = lid.add_one();
+                    local_instance_id = local_instance_id.add_one();
                     continue;
                 }
 
@@ -312,12 +312,12 @@ impl LogDb {
                 max_assign(&mut attr_bounds.max_seq, seq);
                 attr_bounds
                     .max_lids
-                    .entry(rid)
-                    .and_modify(|l| max_assign(l, lid))
-                    .or_insert(lid);
-                status_bounds.set(InstanceId(rid, lid), status);
+                    .entry(replica_id)
+                    .and_modify(|l| max_assign(l, local_instance_id))
+                    .or_insert(local_instance_id);
+                status_bounds.set(InstanceId(replica_id, local_instance_id), status);
 
-                lid = lid.add_one();
+                local_instance_id = local_instance_id.add_one();
             }
 
             iter.status()?;

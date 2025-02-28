@@ -1,8 +1,9 @@
+use crate::RpcClientConfig;
+use crate::RpcServerConfig;
 use crate::clone;
 use crate::utils::chan;
 use crate::utils::codec;
 
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,13 +61,6 @@ impl<A, O> Drop for RpcConnection<A, O> {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RpcClientConfig {
-    pub max_frame_length: usize,
-    pub op_chan_size: usize,
-    pub forward_chan_size: usize,
 }
 
 impl<A, O> RpcConnection<A, O>
@@ -288,18 +282,13 @@ where
     }
 }
 
-pub trait Service<A: Send + 'static>: Send + Sync + 'static {
-    type Output: Send + 'static;
+#[async_trait::async_trait]
+pub trait Service<A: Send + Sync>: Send + Sync + 'static {
+    type Output;
 
-    fn call(self: &Arc<Self>, args: A) -> impl Future<Output = Result<Self::Output>> + Send;
+    async fn call(self: &Arc<Self>, args: A) -> Result<Self::Output>;
 
     fn needs_stop(&self) -> bool;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcServerConfig {
-    pub max_frame_length: usize,
-    pub max_task_num: usize,
 }
 
 #[inline]
@@ -311,7 +300,7 @@ pub async fn serve<S, A>(
 ) -> Result<()>
 where
     S: Service<A>,
-    A: DeserializeOwned + Send + 'static,
+    A: DeserializeOwned + Send + Sync,
     <S as Service<A>>::Output: Serialize + Send + 'static,
 {
     let max_frame_length = config.max_frame_length;

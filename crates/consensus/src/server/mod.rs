@@ -8,16 +8,5 @@
 )]
 #![warn(clippy::todo, clippy::dbg_macro)]
 
-mod rpc;
-pub use rpc::*;
-
-mod client_call_server;
-pub use client_call_server::*;
-
-mod net;
-
-mod config;
-pub use config::*;
-
-mod peer_call_server;
-pub use peer_call_server::*;
+mod consensus_server;
+pub use consensus_server::*;

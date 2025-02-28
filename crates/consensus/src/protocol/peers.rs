@@ -108,8 +108,8 @@ impl Peers {
 
     pub fn set_inf_rtt(&mut self, peers: &VecSet<ReplicaId>) {
         let mut is_changed = false;
-        for &mut (ref mut rk, rid) in &mut self.rank {
-            if peers.contains(&rid) {
+        for &mut (ref mut rk, replica_id) in &mut self.rank {
+            if peers.contains(&replica_id) {
                 self.avg.sub(*rk);
                 *rk = u64::MAX;
                 is_changed = true;
@@ -146,12 +146,12 @@ impl Peers {
         let mut ans_others = VecSet::new();
         if ans_acc.len() < quorum {
             let need = quorum.wrapping_sub(ans_acc.len());
-            for &(_, rid) in self.rank.iter() {
+            for &(_, replica_id) in self.rank.iter() {
                 if ans_others.len() >= need {
                     break;
                 }
-                if ans_acc.contains(&rid).not() {
-                    let _ = ans_others.insert(rid);
+                if ans_acc.contains(&replica_id).not() {
+                    let _ = ans_others.insert(replica_id);
                 }
             }
         };

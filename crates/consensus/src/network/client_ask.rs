@@ -1,8 +1,4 @@
-//! client calls server
-
-use crate::{ReplicaId, SavedStatusBounds};
-
-use super::rpc::{RpcClientConfig, RpcConnection};
+use crate::{ReplicaId, RpcClientConfig, RpcConnection, SavedStatusBounds};
 
 use std::net::SocketAddr;
 
@@ -11,47 +7,47 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Args {
-    Get(GetArgs),
-    Set(SetArgs),
-    Del(DelArgs),
+pub enum ClientArgs {
+    Get(ClientGetArgs),
+    Set(ClientSetArgs),
+    Del(ClientDeleteArgs),
     GetMetrics(GetMetricsArgs),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Output {
-    Get(GetOutput),
-    Set(SetOutput),
-    Del(DelOutput),
+pub enum ClientOutput {
+    Get(ClientGetOutput),
+    Set(ClientSetOutput),
+    Del(ClientDeleteOutput),
     GetMetrics(GetMetricsOutput),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GetArgs {
+pub struct ClientGetArgs {
     pub key: Bytes,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GetOutput {
+pub struct ClientGetOutput {
     pub value: Option<Bytes>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetArgs {
+pub struct ClientSetArgs {
     pub key: Bytes,
     pub value: Bytes,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SetOutput {}
+pub struct ClientSetOutput {}
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DelArgs {
+pub struct ClientDeleteArgs {
     pub key: Bytes,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DelOutput {}
+pub struct ClientDeleteOutput {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetMetricsArgs {}
@@ -62,7 +58,7 @@ pub struct GetMetricsOutput {
     pub network_msg_count: u64,
     pub proposed_single_cmd_count: u64,
     pub proposed_batched_cmd_count: u64,
-    pub replica_rid: ReplicaId,
+    pub replica_replica_id: ReplicaId,
     pub replica_preaccept_fast_path: u64,
     pub replica_preaccept_slow_path: u64,
     pub replica_recover_nop_count: u64,
@@ -72,30 +68,30 @@ pub struct GetMetricsOutput {
     pub executed_batched_cmd_count: u64,
 }
 
-pub struct ServerForClient {
-    conn: RpcConnection<Args, Output>,
+pub struct ClientAsk {
+    conn: RpcConnection<ClientArgs, ClientOutput>,
 }
 
 macro_rules! declare_rpc {
     ($method: ident, $kind: ident, $args: ident, $output: ident) => {
         pub async fn $method(&self, args: $args) -> Result<$output> {
-            let output = self.conn.call(Args::$kind(args)).await?;
+            let output = self.conn.call(ClientArgs::$kind(args)).await?;
             match output {
-                Output::$kind(output) => Ok(output),
+                ClientOutput::$kind(output) => Ok(output),
                 _ => Err(anyhow!("unexpected rpc output type")),
             }
         }
     };
 }
 
-impl ServerForClient {
+impl ClientAsk {
     pub async fn connect(remote_addr: SocketAddr, config: &RpcClientConfig) -> Result<Self> {
         let conn = RpcConnection::connect(remote_addr, config).await?;
         Ok(Self { conn })
     }
 
-    declare_rpc!(get, Get, GetArgs, GetOutput);
-    declare_rpc!(set, Set, SetArgs, SetOutput);
-    declare_rpc!(del, Del, DelArgs, DelOutput);
+    declare_rpc!(get, Get, ClientGetArgs, ClientGetOutput);
+    declare_rpc!(set, Set, ClientSetArgs, ClientSetOutput);
+    declare_rpc!(del, Del, ClientDeleteArgs, ClientDeleteOutput);
     declare_rpc!(get_metrics, GetMetrics, GetMetricsArgs, GetMetricsOutput);
 }

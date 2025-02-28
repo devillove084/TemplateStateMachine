@@ -1,20 +1,20 @@
-use super::id::ReplicaId;
-use super::message::{Accept, Commit, Message, PreAccept};
-
 use std::net::SocketAddr;
 use std::ops::Not;
+use std::sync::Arc;
 
 use ordered_vecmap::VecSet;
 
-pub trait MembershipChange<C>: Send + Sync + 'static {
+use crate::{Accept, CommandLike, Commit, Message, PreAccept, ReplicaId};
+
+pub trait MemberNetwork<C: CommandLike>: Send + Sync + 'static {
     fn broadcast(&self, targets: VecSet<ReplicaId>, msg: Message<C>);
     fn send_one(&self, target: ReplicaId, msg: Message<C>);
-    fn join(&self, rid: ReplicaId, addr: SocketAddr) -> Option<ReplicaId>;
-    fn leave(&self, rid: ReplicaId);
+    fn join(&self, replica_id: ReplicaId, addr: SocketAddr) -> Option<ReplicaId>;
+    fn leave(&self, replica_id: ReplicaId);
 }
 
-pub fn broadcast_preaccept<C>(
-    network: &impl MembershipChange<C>,
+pub fn broadcast_preaccept<C: CommandLike>(
+    network: Arc<dyn MemberNetwork<C>>,
     acc: VecSet<ReplicaId>,
     others: VecSet<ReplicaId>,
     msg: PreAccept<C>,
@@ -40,8 +40,8 @@ pub fn broadcast_preaccept<C>(
     }
 }
 
-pub fn broadcast_accept<C>(
-    network: &impl MembershipChange<C>,
+pub fn broadcast_accept<C: CommandLike>(
+    network: Arc<dyn MemberNetwork<C>>,
     acc: VecSet<ReplicaId>,
     others: VecSet<ReplicaId>,
     msg: Accept<C>,
@@ -67,8 +67,8 @@ pub fn broadcast_accept<C>(
     }
 }
 
-pub fn broadcast_commit<C>(
-    network: &impl MembershipChange<C>,
+pub fn broadcast_commit<C: CommandLike>(
+    network: Arc<dyn MemberNetwork<C>>,
     acc: VecSet<ReplicaId>,
     others: VecSet<ReplicaId>,
     msg: Commit<C>,

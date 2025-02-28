@@ -29,8 +29,8 @@ impl fmt::Debug for Be64 {
 #[repr(C)]
 pub struct InstanceFieldKey {
     prefix: OneU8,
-    rid: Be64,
-    lid: Be64,
+    replica_id: Be64,
+    local_instance_id: Be64,
     field: u8,
 }
 
@@ -52,8 +52,8 @@ impl InstanceFieldKey {
     pub fn new(id: InstanceId, field: u8) -> Self {
         Self {
             prefix: OneU8::VALUE,
-            rid: Be64::new(id.0.raw_value()),
-            lid: Be64::new(id.1.raw_value()),
+            replica_id: Be64::new(id.0.raw_value()),
+            local_instance_id: Be64::new(id.1.raw_value()),
             field,
         }
     }
@@ -69,14 +69,14 @@ impl InstanceFieldKey {
 
     #[must_use]
     pub fn id(&self) -> InstanceId {
-        let rid = self.rid.to_u64().into();
-        let lid = self.lid.to_u64().into();
-        InstanceId(rid, lid)
+        let replica_id = self.replica_id.to_u64().into();
+        let local_instance_id = self.local_instance_id.to_u64().into();
+        InstanceId(replica_id, local_instance_id)
     }
 
     pub fn set_id(&mut self, id: InstanceId) {
-        self.rid = Be64::new(id.0.raw_value());
-        self.lid = Be64::new(id.1.raw_value());
+        self.replica_id = Be64::new(id.0.raw_value());
+        self.local_instance_id = Be64::new(id.1.raw_value());
     }
 }
 

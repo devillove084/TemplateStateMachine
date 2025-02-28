@@ -51,14 +51,14 @@ impl StatusBounds {
 
     pub fn set(&mut self, id: InstanceId, status: Status) {
         debug!(?id, ?status, "set status");
-        let InstanceId(rid, lid) = id;
-        let m = self.0.entry(rid).or_default();
-        m.known.set(lid.raw_value());
+        let InstanceId(replica_id, local_instance_id) = id;
+        let m = self.0.entry(replica_id).or_default();
+        m.known.set(local_instance_id.raw_value());
         if status >= Status::Committed {
-            m.committed.set(lid.raw_value());
+            m.committed.set(local_instance_id.raw_value());
         }
         if status >= Status::Executed {
-            m.executed.set(lid.raw_value());
+            m.executed.set(local_instance_id.raw_value());
         }
     }
 
@@ -110,12 +110,12 @@ impl PeerStatusBounds {
         }
     }
 
-    pub fn set_committed(&mut self, rid: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
-        let _ = self.committed.insert(rid, bounds);
+    pub fn set_committed(&mut self, replica_id: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
+        let _ = self.committed.insert(replica_id, bounds);
     }
 
-    pub fn set_executed(&mut self, rid: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
-        let _ = self.executed.insert(rid, bounds);
+    pub fn set_executed(&mut self, replica_id: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
+        let _ = self.executed.insert(replica_id, bounds);
     }
 
     #[must_use]

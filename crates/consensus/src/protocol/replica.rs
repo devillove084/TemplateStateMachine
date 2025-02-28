@@ -1,14 +1,12 @@
 use super::acc::{Acc, MutableAcc};
 use super::bounds::{PeerStatusBounds, SavedStatusBounds};
 use super::cmd::CommandLike;
-use super::config::ReplicaConfig;
 use super::deps::Deps;
 use super::exec::ExecNotify;
 use super::graph::{DepsQueue, Graph, InsNode, LocalGraph};
 use super::id::*;
 use super::instance::Instance;
 use super::log::{InsGuard, Log};
-use super::membership::{self, MembershipChange};
 use super::message::*;
 use super::peers::Peers;
 use super::status::{ExecStatus, Status};
@@ -16,7 +14,6 @@ use super::status::{ExecStatus, Status};
 #[cfg(test)]
 use crate::hook::TestHooks;
 
-use crate::clone;
 use crate::lock::with_async_mutex;
 use crate::storage::{DataStore, LogStore, UpdateMode};
 use crate::utils::chan::{self, recv_timeout};
@@ -24,6 +21,9 @@ use crate::utils::cmp::max_assign;
 use crate::utils::flag_group::FlagGroup;
 use crate::utils::iter::map_collect;
 use crate::utils::time::LocalInstant;
+use crate::{
+    MemberNetwork, ReplicaConfig, broadcast_accept, broadcast_commit, broadcast_preaccept, clone,
+};
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -53,36 +53,33 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error};
 
-pub struct Replica<C, L, D, N>
+pub struct Replica<C>
 where
     C: CommandLike,
-    L: LogStore<C>,
-    D: DataStore<C>,
-    N: MembershipChange<C>,
 {
-    rid: ReplicaId,
+    replica_id: ReplicaId,
     public_peer_addr: SocketAddr,
     config: ReplicaConfig,
 
     epoch: AtomicEpoch,
     state: AsyncMutex<State>,
-    log: Log<C, L>,
+    log: Log<C>,
 
     propose_tx: DashMap<InstanceId, mpsc::Sender<Message<C>>>,
     join_tx: SyncMutex<Option<mpsc::Sender<JoinOk>>>,
     sync_tx: DashMap<SyncId, mpsc::Sender<SyncLogOk>>,
 
     graph: Graph<C>,
-    data_store: Arc<D>,
+    data_store: Arc<dyn DataStore<C>>,
 
-    network: N,
+    network: Arc<dyn MemberNetwork<C>>,
 
     recovering: DashMap<InstanceId, JoinHandle<()>>,
     executing: DashMap<InstanceId, JoinHandle<()>>,
     exec_row_locks: DashMap<ReplicaId, Arc<AsyncMutex<()>>>,
     executing_limit: Arc<Semaphore>,
 
-    metrics: AsyncMutex<Metrics>,
+    metrics: AsyncMutex<ReplicaMetrics>,
     probe_rtt_countdown: AtomicU64,
 
     #[cfg(test)]
@@ -92,8 +89,8 @@ where
 struct State {
     peers: Peers,
     peer_status_bounds: PeerStatusBounds,
-    lid_head: Head<LocalInstanceId>,
-    sync_id_head: Head<SyncId>,
+    local_instance_id_generator: NextGenerator<LocalInstanceId>,
+    sync_id_generator: NextGenerator<SyncId>,
 }
 
 struct StateGuard<'a> {
@@ -122,7 +119,7 @@ impl Drop for StateGuard<'_> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Metrics {
+pub struct ReplicaMetrics {
     pub preaccept_fast_path: u64,
     pub preaccept_slow_path: u64,
     pub recover_nop_count: u64,
@@ -131,7 +128,7 @@ pub struct Metrics {
 
 #[derive(Debug)]
 pub struct ReplicaMeta {
-    pub rid: ReplicaId,
+    pub replica_id: ReplicaId,
     pub epoch: Epoch,
     pub peers: VecMap<ReplicaId, SocketAddr>,
     pub public_peer_addr: SocketAddr,
@@ -140,14 +137,14 @@ pub struct ReplicaMeta {
 
 impl Default for ReplicaMeta {
     fn default() -> Self {
-        let rid = ReplicaId::default();
+        let replica_id = ReplicaId::default();
         let epoch = Epoch::default();
         let peers = VecMap::default();
         let public_peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9527);
         let config = ReplicaConfig::default();
 
         Self {
-            rid,
+            replica_id,
             epoch,
             peers,
             public_peer_addr,
@@ -156,20 +153,17 @@ impl Default for ReplicaMeta {
     }
 }
 
-impl<C, L, D, N> Replica<C, L, D, N>
+impl<C> Replica<C>
 where
     C: CommandLike,
-    L: LogStore<C>,
-    D: DataStore<C>,
-    N: MembershipChange<C>,
 {
     pub async fn new(
         meta: ReplicaMeta,
-        log_store: Arc<L>,
-        data_store: Arc<D>,
-        network: N,
+        log_store: Arc<dyn LogStore<C>>,
+        data_store: Arc<dyn DataStore<C>>,
+        network: Arc<dyn MemberNetwork<C>>,
     ) -> Result<Arc<Self>> {
-        let rid = meta.rid;
+        let replica_id = meta.replica_id;
         let public_peer_addr = meta.public_peer_addr;
         let epoch = meta.epoch;
         let peers = meta.peers;
@@ -179,7 +173,7 @@ where
         ensure!(
             peers
                 .iter()
-                .all(|&(p, a)| p != rid && a != public_peer_addr)
+                .all(|&(p, a)| p != replica_id && a != public_peer_addr)
         );
         ensure!(addr_set.len() == peers.len());
 
@@ -192,22 +186,22 @@ where
             let peers_set: VecSet<_> = map_collect(&peers, |&(p, _)| p);
             let peers = Peers::new(peers_set);
 
-            let lid_head = Head::new(
+            let local_instance_id_generator = NextGenerator::new(
                 attr_bounds
                     .max_lids
-                    .get(&rid)
+                    .get(&replica_id)
                     .copied()
                     .unwrap_or(LocalInstanceId::ZERO),
             );
 
-            let sync_id_head = Head::new(SyncId::ZERO);
+            let sync_id_generator = NextGenerator::new(SyncId::ZERO);
 
             let peer_status_bounds = PeerStatusBounds::new();
 
             AsyncMutex::new(State {
                 peers,
-                lid_head,
-                sync_id_head,
+                local_instance_id_generator,
+                sync_id_generator,
                 peer_status_bounds,
             })
         };
@@ -233,7 +227,7 @@ where
             config.execution_limits.max_task_num.numeric_cast(),
         ));
 
-        let metrics = AsyncMutex::new(Metrics {
+        let metrics = AsyncMutex::new(ReplicaMetrics {
             preaccept_fast_path: 0,
             preaccept_slow_path: 0,
             recover_nop_count: 0,
@@ -243,7 +237,7 @@ where
         let probe_rtt_countdown = AtomicU64::new(config.optimization.probe_rtt_per_msg_count);
 
         Ok(Arc::new(Self {
-            rid,
+            replica_id,
             public_peer_addr,
             config,
             state,
@@ -280,23 +274,23 @@ where
     }
 
     #[inline]
-    pub fn network(&self) -> &N {
-        &self.network
+    pub fn network(&self) -> &dyn MemberNetwork<C> {
+        self.network.as_ref()
     }
 
     #[inline]
-    pub async fn metrics(&self) -> Metrics {
+    pub async fn metrics(&self) -> ReplicaMetrics {
         with_async_mutex(&self.metrics, |m| m.clone()).await
     }
 
     #[inline]
-    pub fn data_store(&self) -> &D {
-        &self.data_store
+    pub fn data_store(&self) -> &dyn DataStore<C> {
+        self.data_store.as_ref()
     }
 
     #[inline]
-    pub fn rid(&self) -> ReplicaId {
-        self.rid
+    pub fn replica_id(&self) -> ReplicaId {
+        self.replica_id
     }
 
     #[inline]
@@ -332,7 +326,7 @@ where
         }
     }
 
-    #[tracing::instrument(skip_all, fields(rid = ?self.rid, epoch = ?self.epoch.load()))]
+    #[tracing::instrument(skip_all, fields(replica_id = ?self.replica_id, epoch = ?self.epoch.load()))]
     pub async fn handle_message(self: &Arc<Self>, msg: Message<C>) -> Result<()> {
         debug!(msg_variant_name = ?msg.variant_name());
 
@@ -472,13 +466,13 @@ where
         f(&mut guard)
     }
 
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_propose(self: &Arc<Self>, cmd: C) -> Result<InstanceId> {
         let id = self
-            .with(|s| InstanceId(self.rid, s.lid_head.gen_next()))
+            .with(|s| InstanceId(self.replica_id, s.local_instance_id_generator.gen_next()))
             .await;
 
-        let propose_ballot = Ballot(Round::ZERO, self.rid);
+        let propose_ballot = Ballot(Round::ZERO, self.replica_id);
         let acc = Acc::from_mutable(MutableAcc::with_capacity(1));
 
         debug!(?id, "run_propose");
@@ -520,7 +514,7 @@ where
 
             let acc = {
                 let mut acc = acc;
-                acc.cow_insert(self.rid);
+                acc.cow_insert(self.replica_id);
                 acc
             };
 
@@ -561,7 +555,7 @@ where
                 debug!(?selected_peers, "broadcast preaccept");
 
                 clone!(deps, acc);
-                let sender = self.rid;
+                let sender = self.replica_id;
                 let epoch = self.epoch.load();
 
                 let msg = PreAccept {
@@ -576,8 +570,8 @@ where
                 };
 
                 if self.config.optimization.enable_acc {
-                    membership::broadcast_preaccept(
-                        &self.network,
+                    broadcast_preaccept(
+                        self.network.clone(),
                         selected_peers.acc,
                         selected_peers.others,
                         msg,
@@ -899,7 +893,7 @@ where
         let status = Status::PreAccepted;
 
         let mut acc = msg.acc;
-        acc.cow_insert(self.rid);
+        acc.cow_insert(self.replica_id);
 
         {
             clone!(deps);
@@ -924,7 +918,7 @@ where
 
         {
             let target = msg.sender;
-            let sender = self.rid;
+            let sender = self.replica_id;
             let epoch = self.epoch.load();
             self.network.send_one(
                 target,
@@ -1004,7 +998,7 @@ where
                 debug!(?selected_peers, "broadcast accept");
 
                 clone!(acc);
-                let sender = self.rid;
+                let sender = self.replica_id;
                 let epoch = self.epoch.load();
 
                 let msg = Accept {
@@ -1019,8 +1013,8 @@ where
                 };
 
                 if self.config.optimization.enable_acc {
-                    membership::broadcast_accept(
-                        &self.network,
+                    broadcast_accept(
+                        self.network.clone(),
                         selected_peers.acc,
                         selected_peers.others,
                         msg,
@@ -1155,7 +1149,7 @@ where
         let status = Status::Accepted;
 
         let mut acc = msg.acc;
-        acc.cow_insert(self.rid);
+        acc.cow_insert(self.replica_id);
 
         let seq = msg.seq;
         let deps = msg.deps;
@@ -1186,7 +1180,7 @@ where
 
         {
             let target = msg.sender;
-            let sender = self.rid;
+            let sender = self.replica_id;
             let epoch = self.epoch.load();
             self.network.send_one(
                 target,
@@ -1251,7 +1245,7 @@ where
         {
             debug!(?selected_peers, "broadcast commit");
 
-            let sender = self.rid;
+            let sender = self.replica_id;
             let epoch = self.epoch.load();
             clone!(cmd, deps);
 
@@ -1267,8 +1261,8 @@ where
             };
 
             if self.config.optimization.enable_acc {
-                membership::broadcast_commit(
-                    &self.network,
+                broadcast_commit(
+                    self.network.clone(),
                     selected_peers.acc,
                     selected_peers.others,
                     msg,
@@ -1336,7 +1330,7 @@ where
         let accepted_ballot = propose_ballot;
 
         let mut acc = msg.acc;
-        acc.cow_insert(self.rid);
+        acc.cow_insert(self.replica_id);
 
         {
             clone!(cmd, deps);
@@ -1360,7 +1354,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(rid = ?self.rid, id = ?id))]
+    #[tracing::instrument(skip_all, fields(replica_id = ?self.replica_id, id = ?id))]
     async fn run_recover(self: &Arc<Self>, id: InstanceId) -> Result<()> {
         let mut is_not_first = false;
         loop {
@@ -1412,8 +1406,8 @@ where
                 }
 
                 let propose_ballot = match self.log.get_cached_propose_ballot(id).await {
-                    Some(Ballot(rnd, _)) => Ballot(rnd.add_one(), self.rid),
-                    None => Ballot(Round::ZERO, self.rid),
+                    Some(Ballot(rnd, _)) => Ballot(rnd.add_one(), self.replica_id),
+                    None => Ballot(Round::ZERO, self.replica_id),
                 };
 
                 debug!(?propose_ballot);
@@ -1435,7 +1429,7 @@ where
                 drop(ins_guard);
 
                 {
-                    let sender = self.rid;
+                    let sender = self.replica_id;
                     let epoch = self.epoch.load();
 
                     debug!(?epoch, ?id, ?propose_ballot, ?known, "broadcast prepare");
@@ -1746,7 +1740,7 @@ where
         let reply: Result<Message<C>> = async {
             if let Some(propose_ballot) = self.log.get_cached_propose_ballot(id).await {
                 if propose_ballot >= msg.propose_ballot {
-                    let sender = self.rid;
+                    let sender = self.replica_id;
                     return Ok(Message::PrepareNack(PrepareNack {
                         sender,
                         epoch,
@@ -1765,7 +1759,7 @@ where
                     let instance = match instance {
                         Some(instance) => instance,
                         None => {
-                            let sender = self.rid;
+                            let sender = self.replica_id;
                             return Ok(Message::PrepareUnchosen(PrepareUnchosen {
                                 sender,
                                 epoch,
@@ -1786,7 +1780,7 @@ where
                     let status = instance.status;
                     let acc = instance.acc.clone();
 
-                    let sender = self.rid;
+                    let sender = self.replica_id;
                     Ok(Message::PrepareOk(PrepareOk {
                         sender,
                         epoch,
@@ -1809,7 +1803,7 @@ where
         let reply = reply?;
 
         let target = msg.sender;
-        if target == self.rid {
+        if target == self.replica_id {
             Box::pin(self.resume_propose(id, reply)).await?
         } else {
             self.network.send_one(target, reply)
@@ -1828,7 +1822,7 @@ where
         });
     }
 
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_join(self: &Arc<Self>) -> Result<bool> {
         debug!("run_join");
 
@@ -1848,7 +1842,7 @@ where
             // 2 -> 3
             if targets.len() == 1 {
                 let target = targets.as_slice()[0];
-                let sender = self.rid;
+                let sender = self.replica_id;
                 let epoch = self.epoch.load();
                 let addr = self.public_peer_addr;
                 self.network.send_one(
@@ -1868,7 +1862,7 @@ where
                 rx
             };
             {
-                let sender = self.rid;
+                let sender = self.replica_id;
                 let epoch = self.epoch.load();
                 let addr = self.public_peer_addr;
                 self.network.broadcast(
@@ -1923,8 +1917,12 @@ where
 
         {
             let target = msg.sender;
-            self.network
-                .send_one(target, Message::JoinOk(JoinOk { sender: self.rid }));
+            self.network.send_one(
+                target,
+                Message::JoinOk(JoinOk {
+                    sender: self.replica_id,
+                }),
+            );
         }
 
         Ok(())
@@ -1950,7 +1948,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_probe_rtt(&self) -> Result<()> {
         let mut guard = self.lock_state().await;
         let s = &mut *guard;
@@ -1961,7 +1959,7 @@ where
 
         debug!(?targets, "run_probe_rtt");
 
-        let sender = self.rid;
+        let sender = self.replica_id;
         let time = LocalInstant::now();
         self.network
             .broadcast(targets, Message::ProbeRtt(ProbeRtt { sender, time }));
@@ -1969,7 +1967,7 @@ where
     }
 
     async fn handle_probe_rtt(self: &Arc<Self>, msg: ProbeRtt) -> Result<()> {
-        let sender = self.rid;
+        let sender = self.replica_id;
         let target = msg.sender;
         let time = msg.time;
         self.network
@@ -2009,7 +2007,7 @@ where
         drop(guard);
 
         {
-            let sender = self.rid;
+            let sender = self.replica_id;
             let addr = self.public_peer_addr;
             self.network.send_one(
                 target,
@@ -2031,7 +2029,7 @@ where
         let local_known_up_to = self.log.known_up_to();
 
         let target = msg.sender;
-        let sender = self.rid;
+        let sender = self.replica_id;
         let sync_id = SyncId::ZERO;
         let send_log = |instances| {
             self.network.send_one(
@@ -2047,16 +2045,16 @@ where
         let conf = &self.config.sync_limits;
         let limit: usize = conf.max_instance_num.numeric_cast();
 
-        for &(rid, lower) in msg.known_up_to.iter() {
-            let higher = match local_known_up_to.get(&rid) {
+        for &(replica_id, lower) in msg.known_up_to.iter() {
+            let higher = match local_known_up_to.get(&replica_id) {
                 Some(&h) => h,
                 None => continue,
             };
 
             let mut instances: Vec<(InstanceId, Instance<C>)> = Vec::new();
 
-            for lid in LocalInstanceId::range_inclusive(lower.add_one(), higher) {
-                let id = InstanceId(rid, lid);
+            for local_instance_id in LocalInstanceId::range_inclusive(lower.add_one(), higher) {
+                let id = InstanceId(replica_id, local_instance_id);
 
                 let ins_guard = self.log.lock_instance(id).await;
                 self.log.load(id).await?;
@@ -2096,10 +2094,10 @@ where
 
             drop(guard);
 
-            let sender = self.rid;
+            let sender = self.replica_id;
             let mut rxs = Vec::new();
             let mut send_log = |s: &mut State, instances| {
-                let sync_id = s.sync_id_head.gen_next();
+                let sync_id = s.sync_id_generator.gen_next();
                 let (tx, rx) = mpsc::channel(targets.len());
                 let _ = self.sync_tx.insert(sync_id, tx);
                 rxs.push((sync_id, rx));
@@ -2115,9 +2113,9 @@ where
                 )
             };
 
-            for &(rid, higher) in local_bounds.iter() {
+            for &(replica_id, higher) in local_bounds.iter() {
                 let lower = peer_bounds
-                    .get(&rid)
+                    .get(&replica_id)
                     .copied()
                     .unwrap_or(LocalInstanceId::ZERO);
 
@@ -2126,8 +2124,8 @@ where
 
                 let mut instances = <Vec<(InstanceId, Instance<C>)>>::new();
 
-                for lid in LocalInstanceId::range_inclusive(lower.add_one(), higher) {
-                    let id = InstanceId(rid, lid);
+                for local_instance_id in LocalInstanceId::range_inclusive(lower.add_one(), higher) {
+                    let id = InstanceId(replica_id, local_instance_id);
                     let _ins_guard = self.log.lock_instance(id).await;
 
                     self.log.load(id).await?;
@@ -2221,7 +2219,7 @@ where
                             max_assign(&mut instance.accepted_ballot, saved_ins.accepted_ballot);
                             instance.status = Status::Committed;
 
-                            instance.acc.cow_insert(self.rid);
+                            instance.acc.cow_insert(self.replica_id);
                             let mode = if saved_ins.cmd.is_nop() != instance.cmd.is_nop() {
                                 UpdateMode::Full
                             } else {
@@ -2253,7 +2251,7 @@ where
 
         if msg.sync_id != SyncId::ZERO {
             let target = msg.sender;
-            let sender = self.rid;
+            let sender = self.replica_id;
             let sync_id = msg.sync_id;
             self.network
                 .send_one(target, Message::SyncLogOk(SyncLogOk { sender, sync_id }));
@@ -2270,7 +2268,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_broadcast_bounds(self: &Arc<Self>) -> Result<()> {
         let mut guard = self.lock_state().await;
         let s = &mut *guard;
@@ -2284,7 +2282,7 @@ where
         let executed_up_to = Some(bounds.executed_up_to);
 
         {
-            let sender = self.rid;
+            let sender = self.replica_id;
             self.network.broadcast(
                 targets,
                 Message::PeerBounds(PeerBounds {
@@ -2354,9 +2352,9 @@ where
         debug!(?id, "spawned executing task");
     }
 
-    fn init_row_lock(&self, rid: ReplicaId) -> Arc<AsyncMutex<()>> {
+    fn init_row_lock(&self, replica_id: ReplicaId) -> Arc<AsyncMutex<()>> {
         self.exec_row_locks
-            .entry(rid)
+            .entry(replica_id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
     }
@@ -2415,29 +2413,31 @@ where
                 }
 
                 if id.1 > LocalInstanceId::ONE {
-                    let InstanceId(rid, lid) = id;
+                    let InstanceId(replica_id, local_instance_id) = id;
 
-                    let wm = self.graph.watermark(rid);
+                    let wm = self.graph.watermark(replica_id);
 
                     let mut start = LocalInstanceId::from(wm.level().saturating_add(1));
-                    let up_to = spawn_recover_up_to.entry(rid).or_insert(start);
+                    let up_to = spawn_recover_up_to.entry(replica_id).or_insert(start);
                     start = start.max(up_to.add_one());
 
-                    let end = lid.sub_one();
+                    let end = local_instance_id.sub_one();
 
                     if start <= end {
                         for l in LocalInstanceId::range_inclusive(start, end) {
-                            let id = InstanceId(rid, l);
+                            let id = InstanceId(replica_id, l);
                             if vis.contains(&id).not() {
                                 self.spawn_recover_timeout(id, None)
                             }
                         }
-                        let _ = spawn_recover_up_to.insert(rid, lid);
+                        let _ = spawn_recover_up_to.insert(replica_id, local_instance_id);
                     }
 
-                    let cnt = lid.raw_value().saturating_sub(start.raw_value());
-                    debug!(?rid, level=?wm.level(), ?lid, ?start, ?end, ?cnt, "bfs waiting watermark");
-                    wm.until(lid.raw_value()).wait().await;
+                    let cnt = local_instance_id
+                        .raw_value()
+                        .saturating_sub(start.raw_value());
+                    debug!(?replica_id, level=?wm.level(), ?local_instance_id, ?start, ?end, ?cnt, "bfs waiting watermark");
+                    wm.until(local_instance_id.raw_value()).wait().await;
                 }
 
                 {
@@ -2505,7 +2505,9 @@ where
         } else {
             let mut scc_list = local_graph.tarjan_scc(root);
             for scc in &mut scc_list {
-                scc.sort_by_key(|&(InstanceId(rid, lid), ref node)| (node.seq, lid, rid));
+                scc.sort_by_key(|&(InstanceId(replica_id, local_instance_id), ref node)| {
+                    (node.seq, local_instance_id, replica_id)
+                });
             }
 
             let scc_total_len: usize = scc_list.iter().map(|scc| scc.len()).sum();
@@ -2731,7 +2733,7 @@ where
         debug!("retire instances")
     }
 
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_clear_key_map(self: &Arc<Self>) {
         debug!("run_clear_key_map");
         let garbage = self.log.clear_key_map().await;
@@ -2739,7 +2741,7 @@ where
     }
 
     #[allow(clippy::redundant_async_block)] // FIXME
-    #[tracing::instrument(skip_all, fields(rid=?self.rid))]
+    #[tracing::instrument(skip_all, fields(replica_id=?self.replica_id))]
     pub async fn run_save_bounds(self: &Arc<Self>) -> Result<()> {
         self.log.save_bounds().await
     }

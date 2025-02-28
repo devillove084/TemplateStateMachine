@@ -271,9 +271,9 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
             let mut merge =
                 |map: &VecMap<ReplicaId, LocalInstanceId>,
                  project: fn(&mut StatusMap) -> &mut OneMap| {
-                    for &(rid, lid) in map {
-                        let m = maps.entry(rid).or_insert_with(create_default);
-                        ((project)(m)).set_bound(lid.raw_value());
+                    for &(replica_id, local_instance_id) in map {
+                        let m = maps.entry(replica_id).or_insert_with(create_default);
+                        ((project)(m)).set_bound(local_instance_id.raw_value());
                     }
                 };
 
@@ -291,10 +291,10 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
             let status: Status = self.read_file(&status_path).await?;
 
             // 构造相应的 seq 文件路径
-            // 假设路径格式为 "{prefix}/instances/{rid}/{lid}/status"
-            // 则 seq 文件路径为 "{prefix}/instances/{rid}/{lid}/seq"
+            // 假设路径格式为 "{prefix}/instances/{replica_id}/{local_instance_id}/status"
+            // 则 seq 文件路径为 "{prefix}/instances/{replica_id}/{local_instance_id}/seq"
             let parts: Vec<&str> = status_path.split('/').collect();
-            // parts = ["{prefix}", "instances", "{rid}", "{lid}", "status"]
+            // parts = ["{prefix}", "instances", "{replica_id}", "{local_instance_id}", "status"]
             if parts.len() != 5 {
                 // 路径格式不正确，跳过
                 continue;
@@ -316,16 +316,16 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
 
             // 更新 attr_bounds
             max_assign(&mut attr_bounds.max_seq, seq);
-            let rid = ReplicaId::from(u64::from_str_radix(rid_str, 16)?);
-            let lid = LocalInstanceId::from(u64::from_str_radix(lid_str, 16)?);
+            let replica_id = ReplicaId::from(u64::from_str_radix(rid_str, 16)?);
+            let local_instance_id = LocalInstanceId::from(u64::from_str_radix(lid_str, 16)?);
             attr_bounds
                 .max_lids
-                .entry(rid)
-                .and_modify(|l| max_assign(l, lid))
-                .or_insert(lid);
+                .entry(replica_id)
+                .and_modify(|l| max_assign(l, local_instance_id))
+                .or_insert(local_instance_id);
 
             // 更新 status_bounds
-            let instance_id = InstanceId(rid, lid);
+            let instance_id = InstanceId(replica_id, local_instance_id);
             status_bounds.set(instance_id, status);
         }
 
