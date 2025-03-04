@@ -20,6 +20,7 @@ scopeguard = "1.2.0"
 serde = { version = "1.0.214", features = ["derive"] }
 tokio = { version = "1.41.0", features = ["full"] }
 tracing = "0.1.41"
+tracing-test = "0.2.5"
 opendal = "0.50.1"
 bytes = { version = "1.5", features = ["serde"] }
 url = "2"

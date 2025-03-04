@@ -11,7 +11,7 @@ use crate::stepper::Stepper;
 
 pub trait CommandLike
 where
-    Self: Serialize + DeserializeOwned + Clone + Send + Sync + 'static,
+    Self: Serialize + DeserializeOwned + Clone + Default + Send + Sync + 'static,
 {
     type Key: Clone + Eq + Ord + Hash + Send + Sync + 'static;
 

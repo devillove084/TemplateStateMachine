@@ -248,7 +248,7 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
         } else {
             AttrBounds {
                 max_seq: Seq::ZERO,
-                max_lids: VecMap::new(),
+                max_local_instance_ids: VecMap::new(),
             }
         };
 
@@ -319,7 +319,7 @@ impl<C: CommandLike> LogStore<C> for OpenDalLogStore<C> {
             let replica_id = ReplicaId::from(u64::from_str_radix(rid_str, 16)?);
             let local_instance_id = LocalInstanceId::from(u64::from_str_radix(lid_str, 16)?);
             attr_bounds
-                .max_lids
+                .max_local_instance_ids
                 .entry(replica_id)
                 .and_modify(|l| max_assign(l, local_instance_id))
                 .or_insert(local_instance_id);

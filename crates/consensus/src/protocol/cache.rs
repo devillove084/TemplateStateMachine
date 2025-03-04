@@ -27,7 +27,7 @@ where
 
 pub struct MaxKey {
     seq: Seq,
-    lids: VecMap<ReplicaId, LocalInstanceId>,
+    local_instance_ids: VecMap<ReplicaId, LocalInstanceId>,
 }
 
 struct MaxLid {
@@ -48,13 +48,16 @@ where
     pub fn new(attr_bounds: AttrBounds) -> Self {
         let max_key_map = HashMap::new();
 
-        let max_lid_map = copied_map_collect(attr_bounds.max_lids.iter(), |(replica_id, local_instance_id)| {
-            let max_lid = MaxLid {
-                checkpoint: local_instance_id,
-                any: local_instance_id,
-            };
-            (replica_id, max_lid)
-        });
+        let max_lid_map = copied_map_collect(
+            attr_bounds.max_local_instance_ids.iter(),
+            |(replica_id, local_instance_id)| {
+                let max_lid = MaxLid {
+                    checkpoint: local_instance_id,
+                    any: local_instance_id,
+                };
+                (replica_id, max_lid)
+            },
+        );
 
         let max_seq = MaxSeq {
             checkpoint: attr_bounds.max_seq,
@@ -87,7 +90,10 @@ where
         } else {
             keys.for_each(|k| {
                 if let Some(m) = self.max_key_map.get(k) {
-                    let others = m.lids.iter().filter(|(r, _)| *r != replica_id);
+                    let others = m
+                        .local_instance_ids
+                        .iter()
+                        .filter(|(r, _)| *r != replica_id);
                     for &(r, l) in others {
                         deps.insert(InstanceId(r, l));
                     }
@@ -131,14 +137,17 @@ where
                 hash_map::Entry::Occupied(mut e) => {
                     let m = e.get_mut();
                     max_assign(&mut m.seq, seq);
-                    m.lids
+                    m.local_instance_ids
                         .entry(replica_id)
                         .and_modify(|l| max_assign(l, local_instance_id))
                         .or_insert(local_instance_id);
                 }
                 hash_map::Entry::Vacant(e) => {
-                    let lids = VecMap::from_single(replica_id, local_instance_id);
-                    e.insert(MaxKey { seq, lids });
+                    let local_instance_ids = VecMap::from_single(replica_id, local_instance_id);
+                    e.insert(MaxKey {
+                        seq,
+                        local_instance_ids,
+                    });
                 }
             });
 
@@ -227,7 +236,9 @@ where
     pub fn calc_attr_bounds(&self) -> AttrBounds {
         AttrBounds {
             max_seq: self.max_seq.any,
-            max_lids: map_collect(&self.max_lid_map, |&(replica_id, ref m)| (replica_id, m.any)),
+            max_local_instance_ids: map_collect(&self.max_lid_map, |&(replica_id, ref m)| {
+                (replica_id, m.any)
+            }),
         }
     }
 }

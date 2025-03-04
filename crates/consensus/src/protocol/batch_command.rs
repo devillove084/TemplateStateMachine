@@ -5,14 +5,15 @@ use serde::{Deserialize, Serialize};
 
 use super::{CommandLike, Del, Get, Keys, MutableCommand, Set};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BatchedCommand {
     cmds: Arc<[MutableCommand]>,
     meta: BatchedMeta,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum BatchedMeta {
+    #[default]
     Nop,
     Unbounded,
     Bounded(Arc<[Bytes]>),

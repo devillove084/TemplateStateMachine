@@ -229,7 +229,7 @@ impl LogDb {
             self.load_bounds_optional(&mut iter)?.unwrap_or_else(|| {
                 let attr_bounds = AttrBounds {
                     max_seq: Seq::ZERO,
-                    max_lids: VecMap::new(),
+                    max_local_instance_ids: VecMap::new(),
                 };
                 let saved_status_bounds = SavedStatusBounds::default();
                 (attr_bounds, saved_status_bounds)
@@ -311,7 +311,7 @@ impl LogDb {
 
                 max_assign(&mut attr_bounds.max_seq, seq);
                 attr_bounds
-                    .max_lids
+                    .max_local_instance_ids
                     .entry(replica_id)
                     .and_modify(|l| max_assign(l, local_instance_id))
                     .or_insert(local_instance_id);

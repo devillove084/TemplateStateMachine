@@ -15,3 +15,17 @@ pub struct Instance<C> {
     pub status: Status,
     pub acc: Acc,
 }
+
+impl<C: Default> Default for Instance<C> {
+    fn default() -> Self {
+        Self {
+            propose_ballot: Ballot::default(),
+            cmd: C::default(),
+            seq: Seq::default(),
+            deps: Deps::default(),
+            accepted_ballot: Ballot::default(),
+            status: Status::PreAccepted,
+            acc: Acc::default(),
+        }
+    }
+}

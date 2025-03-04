@@ -11,7 +11,7 @@ use tracing::debug;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AttrBounds {
     pub max_seq: Seq,
-    pub max_lids: VecMap<ReplicaId, LocalInstanceId>,
+    pub max_local_instance_ids: VecMap<ReplicaId, LocalInstanceId>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -47,6 +47,41 @@ impl StatusBounds {
     #[must_use]
     pub fn from_maps(maps: VecMap<ReplicaId, StatusMap>) -> Self {
         Self(maps)
+    }
+
+    pub fn from_saved(saved: &SavedStatusBounds) -> Self {
+        let mut maps = VecMap::new();
+
+        let default_status_map = || StatusMap {
+            known: OneMap::new(0),
+            committed: OneMap::new(0),
+            executed: OneMap::new(0),
+        };
+
+        for (rid, lid) in &saved.known_up_to {
+            maps.entry(*rid)
+                .or_insert_with(default_status_map)
+                .known
+                .set_bound(lid.raw_value());
+        }
+
+        for (rid, lid) in &saved.committed_up_to {
+            maps.entry(*rid)
+                .or_insert_with(default_status_map)
+                .committed
+                .set_bound(lid.raw_value());
+        }
+
+        for (rid, lid) in &saved.executed_up_to {
+            maps.entry(*rid)
+                .or_insert_with(default_status_map)
+                .executed
+                .set_bound(lid.raw_value());
+        }
+
+        let mut status_bounds = StatusBounds(maps);
+        status_bounds.update_bounds();
+        status_bounds
     }
 
     pub fn set(&mut self, id: InstanceId, status: Status) {
@@ -110,11 +145,19 @@ impl PeerStatusBounds {
         }
     }
 
-    pub fn set_committed(&mut self, replica_id: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
+    pub fn set_committed(
+        &mut self,
+        replica_id: ReplicaId,
+        bounds: VecMap<ReplicaId, LocalInstanceId>,
+    ) {
         let _ = self.committed.insert(replica_id, bounds);
     }
 
-    pub fn set_executed(&mut self, replica_id: ReplicaId, bounds: VecMap<ReplicaId, LocalInstanceId>) {
+    pub fn set_executed(
+        &mut self,
+        replica_id: ReplicaId,
+        bounds: VecMap<ReplicaId, LocalInstanceId>,
+    ) {
         let _ = self.executed.insert(replica_id, bounds);
     }
 

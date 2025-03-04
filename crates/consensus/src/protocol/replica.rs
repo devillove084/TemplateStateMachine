@@ -188,7 +188,7 @@ where
 
             let local_instance_id_generator = NextGenerator::new(
                 attr_bounds
-                    .max_lids
+                    .max_local_instance_ids
                     .get(&replica_id)
                     .copied()
                     .unwrap_or(LocalInstanceId::ZERO),
@@ -2745,4 +2745,86 @@ where
     pub async fn run_save_bounds(self: &Arc<Self>) -> Result<()> {
         self.log.save_bounds().await
     }
+}
+
+#[cfg(test)]
+mod replica_test {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
+
+    use tracing_test::traced_test;
+
+    use crate::{LocalNetwork, MemoryDataStore, MemoryLogStore, Status};
+
+    use super::{CommandLike, Replica, ReplicaId, ReplicaMeta};
+
+    struct Cluster<C: CommandLike> {
+        replicas: Vec<Arc<Replica<C>>>,
+        net: Arc<LocalNetwork<C>>,
+    }
+
+    impl<C: CommandLike> Cluster<C> {
+        async fn new() -> Self {
+            let net = LocalNetwork::new();
+            let mut replicas = Vec::new();
+
+            let mut replica_id = ReplicaId::ZERO;
+            for index in 0..3 {
+                let log_store = MemoryLogStore::new();
+                let data_store = MemoryDataStore::new();
+
+                let meta = ReplicaMeta {
+                    replica_id,
+                    public_peer_addr: SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                        9000 + index as u16,
+                    ),
+                    ..Default::default()
+                };
+
+                let replica = Replica::new(meta, log_store, data_store, net.clone())
+                    .await
+                    .unwrap();
+                replica_id = replica_id.add_one();
+                replicas.push(replica);
+            }
+
+            Self { replicas, net }
+        }
+    }
+
+    // #[tokio::test]
+    // #[traced_test]
+    // async fn test_basic_propose() {
+    //     let cluster = Cluster::<String>::new().await;
+    //     let client = &cluster.replicas[0];
+
+    //     let id = client.run_propose("SET X=5".into()).await.unwrap();
+
+    //     for replica in &cluster.replicas {
+    //         let instance = replica.log.get_instance(id).await.unwrap();
+    //         assert_eq!(instance.status, Status::Executed);
+    //         assert_eq!(replica.data_store.get(id).await, "SET X=5");
+    //     }
+    // }
+
+    // #[tokio::test]
+    // #[traced_test]
+    // async fn test_conflict_proposals() {
+    //     let cluster = Cluster::<String>::new().await;
+
+    //     let id1 = cluster.replicas[0].run_propose("SET X=5".into()).await.unwrap();
+    //     let id2 = cluster.replicas[1].run_propose("SET X=10".into()).await.unwrap();
+
+    //     let instance1 = cluster.replicas[0].log.get_instance(id1).await.unwrap();
+    //     let instance2 = cluster.replicas[1].log.get_instance(id2).await.unwrap();
+
+    //     assert!(instance1.deps.contains(&id2));
+    //     assert!(instance2.deps.contains(&id1));
+
+    //     let exec_order = cluster.replicas[0].data_store.get_execution_order();
+    //     assert!(exec_order == vec![id1, id2] || exec_order == vec![id2, id1]);
+    // }
 }

@@ -186,7 +186,10 @@ impl<C> Graph<C> {
                 .map(|m| m.committed.bound())
         });
         let generate = || Asc::new(WaterMark::new(bound.unwrap_or(0)));
-        self.watermarks.entry(replica_id).or_insert_with(generate).clone()
+        self.watermarks
+            .entry(replica_id)
+            .or_insert_with(generate)
+            .clone()
     }
 }
 

@@ -7,6 +7,7 @@ pub enum Status {
     Committed = 3,
     Issued = 5,
     Executed = 6,
+    Unknown = 7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
